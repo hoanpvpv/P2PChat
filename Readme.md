@@ -39,6 +39,7 @@ P2PChat là một hệ thống chat ngang hàng (P2P) được xây dựng bằn
 P2PChat/
 ├── Dockerfile                 # Multi-stage build: React → Maven → JRE
 ├── .dockerignore
+├── build.sh                   # Script build thủ công (không dùng Docker)
 ├── run.sh                     # Script quản lý Docker (build/start/stop/peer/list)
 ├── Readme.md
 ├── WORKLOG.md
@@ -171,7 +172,7 @@ Peer A                    Peer B
 | React | 18 | Frontend Web UI |
 | SQLite | 3.45.1 | Lưu trữ cục bộ tại mỗi peer (WAL mode) |
 | Gson | 2.10.1 | Serialize/Deserialize JSON |
-| Maven | - | Build & quản lý dependency |
+| Maven | 3.9+ | Build & quản lý dependency |
 | Docker | - | Containerized deployment |
 
 ## 8. Web UI API
@@ -191,78 +192,225 @@ Peer A                    Peer B
 | POST | `/api/group/msg` | Gửi tin nhắn nhóm |
 | WS | `/ws` | WebSocket realtime events |
 
-## 9. Hướng dẫn chạy
+## 9. Hướng dẫn cài đặt và chạy
 
-### 9.1. Yêu cầu
+### 9.1. Yêu cầu hệ thống
 
-- Docker đã cài đặt
+#### Cách 1 — Dùng Docker (khuyến nghị)
 
-### 9.2. Chạy bằng `run.sh` (Khuyến nghị)
+| Yêu cầu | Ghi chú |
+|---|---|
+| **Docker** | >= 20.x |
+| **Docker Compose** (tùy chọn) | Không bắt buộc, dự án dùng script `run.sh` |
+
+#### Cách 2 — Chạy thủ công (không dùng Docker)
+
+| Yêu cầu | Phiên bản | Cài đặt |
+|---|---|---|
+| **Java JDK** | 17+ | `sudo apt install openjdk-17-jdk` (Ubuntu/Debian) hoặc tải từ [Adoptium](https://adoptium.net/) |
+| **Maven** | 3.9+ | `sudo apt install maven` hoặc tải từ [maven.apache.org](https://maven.apache.org/download.cgi) |
+| **Node.js + npm** | 18+ / 9+ | `sudo apt install nodejs npm` hoặc dùng [nvm](https://github.com/nvm-sh/nvm) |
+
+Kiểm tra phiên bản:
 
 ```bash
-# Build images (chạy 1 lần, ~5 phút đầu tiên)
-./run.sh build
+java -version      # >= 17
+mvn -version       # >= 3.9
+node -v            # >= 18
+npm -v             # >= 9
+```
 
-# Khởi động bootstrap + 2 peer mặc định (alice, bob)
+---
+
+### 9.2. Cách 1: Chạy bằng Docker (Khuyến nghị)
+
+#### Bước 1: Clone repository
+
+```bash
+git clone <repo-url> P2PChat
+cd P2PChat
+```
+
+#### Bước 2: Build Docker images
+
+```bash
+chmod +x run.sh
+./run.sh build
+```
+
+Lệnh này sẽ build 2 images:
+- `p2pchat-bootstrap` — Bootstrap Server
+- `p2pchat-peer` — Peer Node (kèm React Web UI được build sẵn)
+
+Lần đầu build sẽ mất khoảng 3-5 phút để download dependencies.
+
+#### Bước 3: Khởi động hệ thống
+
+```bash
+# Khởi động bootstrap server + 2 peer mặc định (alice, bob)
 ./run.sh start
 
-# Hoặc khởi động peer riêng lẻ với tên bất kỳ (port ngẫu nhiên)
-./run.sh peer alice
-./run.sh peer bob
+# Hoặc chỉ định tên peer
+./run.sh start alice bob
+
+# Hoặc thêm peer mới bất kỳ lúc nào
 ./run.sh peer charlie
-
-# Xem danh sách peer đang chạy + URL Web UI
-./run.sh list
-
-# Xem log
-./run.sh logs alice     # log peer alice
-./run.sh logs bob       # log peer bob
-./run.sh logs s         # log bootstrap server
-
-# Dừng tất cả
-./run.sh stop
-
-# Khởi động lại
-./run.sh restart
+./run.sh peer dave
 ```
 
-### 9.3. Chạy thủ công bằng Docker
+#### Bước 4: Truy cập Web UI
 
 ```bash
-# Build
-docker build -t p2pchat-bootstrap -f bootstrap-server/Dockerfile bootstrap-server/
-docker build -f Dockerfile -t p2pchat-peer .
-
-# Tạo network
-docker network create p2p-net
-
-# Start bootstrap
-docker run -d --name bootstrap --network p2p-net -p 8080:8080 p2pchat-bootstrap
-
-# Start peer (thay port tùy ý)
-docker run -d --name peer-alice --network p2p-net \
-  -p 5001:5001 -p 3000:3000 p2pchat-peer \
-  --username alice --host peer-alice --port 5001 --bootstrap bootstrap:8080 --web 3000
-
-docker run -d --name peer-bob --network p2p-net \
-  -p 5002:5002 -p 3001:3001 p2pchat-peer \
-  --username bob --host peer-bob --port 5002 --bootstrap bootstrap:8080 --web 3001
+# Xem danh sách peer đang chạy + URL Web UI
+./run.sh list
 ```
 
-### 9.4. CLI Chat (trong container)
+Mở trình duyệt tại URL hiển thị, ví dụ:
+- Peer alice: `http://localhost:30001` (port ngẫu nhiên)
+- Peer bob: `http://localhost:30002` (port ngẫu nhiên)
+
+#### Bước 5: Chat!
+
+Trong Web UI của mỗi peer:
+1. Sidebar trái hiển thị danh sách peer online và nhóm
+2. Click vào tên peer để chat trực tiếp
+3. Dùng nút tạo nhóm và thêm member
+4. Nhập tin nhắn và gửi
+
+#### Các lệnh quản lý khác
+
+```bash
+./run.sh list               # Xem danh sách peer + URL Web UI
+./run.sh logs alice         # Xem log peer alice
+./run.sh logs bob           # Xem log peer bob
+./run.sh logs s             # Xem log bootstrap server
+./run.sh stop               # Dừng tất cả container
+./run.sh restart            # Khởi động lại tất cả
+```
+
+---
+
+### 9.3. Cách 2: Chạy thủ công (Local, không dùng Docker)
+
+#### Bước 1: Clone repository
+
+```bash
+git clone <repo-url> P2PChat
+cd P2PChat
+```
+
+#### Bước 2: Build React Frontend
+
+```bash
+cd peer-web
+npm install
+npm run build
+```
+
+Kết quả: thư mục `peer-web/build/` chứa static files.
+
+#### Bước 3: Copy React build vào Peer Node resources
+
+```bash
+cd /path/to/P2PChat
+rm -rf peer-node/src/main/resources/static
+cp -r peer-web/build peer-node/src/main/resources/static
+```
+
+#### Bước 4: Build Bootstrap Server
+
+```bash
+cd /path/to/P2PChat/bootstrap-server
+mvn clean package -DskipTests
+```
+
+Kết quả: `bootstrap-server/target/bootstrap-server.jar`
+
+#### Bước 5: Build Peer Node
+
+```bash
+cd /path/to/P2PChat/peer-node
+mvn clean package -DskipTests
+```
+
+Kết quả: `peer-node/target/peer-node.jar`
+
+> **Tip:** Có thể dùng script `build.sh` ở root để tự động hóa Bước 2–5:
+> ```bash
+> chmod +x build.sh
+> ./build.sh
+> ```
+
+#### Bước 6: Khởi động Bootstrap Server
+
+```bash
+cd /path/to/P2PChat
+java -jar bootstrap-server/target/bootstrap-server.jar
+```
+
+Bootstrap server chạy mặc định trên port `8080`. Giữ terminal này mở.
+
+#### Bước 7: Khởi động Peer Node
+
+Mở terminal mới cho mỗi peer:
+
+```bash
+# Terminal 2 — Peer alice
+java -jar peer-node/target/peer-node.jar \
+  --username alice \
+  --port 5001 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3000
+
+# Terminal 3 — Peer bob
+java -jar peer-node/target/peer-node.jar \
+  --username bob \
+  --port 5002 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3001
+
+# Terminal 4 — Peer charlie
+java -jar peer-node/target/peer-node.jar \
+  --username charlie \
+  --port 5003 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3002
+```
+
+#### Bước 8: Truy cập Web UI
+
+Mở trình duyệt:
+- Peer alice: `http://localhost:3000`
+- Peer bob: `http://localhost:3001`
+- Peer charlie: `http://localhost:3002`
+
+---
+
+### 9.4. CLI Chat (trong terminal peer)
+
+Nếu chạy thủ công (không Docker), CLI chat có sẵn ngay trong terminal chạy peer. Gõ các lệnh sau:
+
+| Lệnh | Mô tả |
+|---|---|
+| `/peers` | Hiển thị danh sách peer online |
+| `/msg <tên> <nội dung>` | Gửi tin nhắn trực tiếp |
+| `/group create <tên nhóm>` | Tạo nhóm chat |
+| `/group add <tên nhóm> <tên peer>` | Thêm peer vào nhóm |
+| `/group msg <tên nhóm> <nội dung>` | Gửi tin nhắn nhóm |
+| `/broadcast <nội dung>` | Phát tin nhắn toàn mạng |
+| `/history <tên>` | Xem lịch sử chat |
+| `/discover` | Refresh peer list |
+| `/exit` | Thoát |
+
+Nếu chạy bằng Docker, dùng `docker attach` để vào CLI:
 
 ```bash
 docker attach peer-alice
-# Sau đó gõ:
-# /peers                    - Hiển thị danh sách peer online
-# /msg bob Xin chào!        - Gửi tin nhắn trực tiếp
-# /group create group1      - Tạo nhóm chat
-# /group add group1 bob     - Thêm peer vào nhóm
-# /group msg group1 Hello   - Gửi tin nhắn nhóm
-# /broadcast Hello all!     - Phát tin nhắn toàn mạng
-# /history bob              - Xem lịch sử chat
-# /discover                 - Refresh peer list
-# /exit                     - Thoát
+# Gõ lệnh CLI như trên
+# Thoát attach: Ctrl+P, Ctrl+Q (không dùng Ctrl+C sẽ dừng container)
 ```
 
 ### 9.5. CLI Flags
@@ -275,7 +423,45 @@ docker attach peer-alice
 | `--bootstrap` | `localhost:8080` | Địa chỉ bootstrap server |
 | `--web` | `3000` | Port Web UI (HTTP + WebSocket) |
 
-## 10. Chức năng đã triển khai
+---
+
+### 9.6. Chạy thủ công bằng Docker (không dùng run.sh)
+
+```bash
+# Build images
+docker build -t p2pchat-bootstrap -f bootstrap-server/Dockerfile bootstrap-server/
+docker build -f Dockerfile -t p2pchat-peer .
+
+# Tạo network
+docker network create p2p-net
+
+# Start bootstrap
+docker run -d --name bootstrap --network p2p-net -p 8080:8080 p2pchat-bootstrap
+
+# Start peer
+docker run -d --name peer-alice --network p2p-net \
+  -p 5001:5001 -p 3000:3000 p2pchat-peer \
+  --username alice --host peer-alice --port 5001 --bootstrap bootstrap:8080 --web 3000
+
+docker run -d --name peer-bob --network p2p-net \
+  -p 5002:5002 -p 3001:3001 p2pchat-peer \
+  --username bob --host peer-bob --port 5002 --bootstrap bootstrap:8080 --web 3001
+```
+
+## 10. Xử lý lỗi thường gặp
+
+| Lỗi | Nguyên nhân | Cách fix |
+|---|---|---|
+| `java: command not found` | Chưa cài Java 17+ | Cài JDK 17 và thêm vào PATH |
+| `mvn: command not found` | Chưa cài Maven | Cài Maven 3.9+ |
+| `npm: command not found` | Chưa cài Node.js | Cài Node.js 18+ |
+| `Port 8080 already in use` | Bootstrap server port bị chiếm | Dừng process chiếm port hoặc đổi port |
+| `Port 5001 already in use` | Peer port bị chiếm | Dùng port khác qua `--port` |
+| `Connection refused` | Peer không kết nối được Bootstrap | Kiểm tra Bootstrap đang chạy và `--bootstrap` đúng địa chỉ |
+| `Web UI không load` | Chưa build React hoặc chưa copy static files | Chạy lại `build.sh` hoặc build thủ công Bước 2–3 |
+| Docker build chậm | Lần đầu download dependencies | Bình thường, chờ 3-5 phút |
+
+## 11. Chức năng đã triển khai
 
 - [x] Bootstrap-based peer discovery
 - [x] Heartbeat + dead peer detection
@@ -291,6 +477,6 @@ docker attach peer-alice
 - [x] Docker containerized deployment
 - [x] Script `run.sh` quản lý peer với port ngẫu nhiên
 
-## 11. Tác giả
+## 12. Tác giả
 
 Đồ án môn Hệ thống Phân tán.
