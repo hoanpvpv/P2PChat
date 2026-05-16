@@ -18,6 +18,11 @@ public class PeerManager {
     private String bootstrapHost;
     private int bootstrapPort;
     private String localUsername;
+    private String localHost;
+    private int localPort;
+    private int webPort;
+    private volatile boolean registeredToBootstrap;
+    private volatile String lastBootstrapError;
 
     public PeerManager(String dbName) {
         this.dbManager = new DatabaseManager(dbName);
@@ -59,6 +64,7 @@ public class PeerManager {
     }
 
     public void parsePeerList(String peerListStr) {
+        knownPeers.values().forEach(peer -> peer.setOnline(false));
         if (peerListStr == null || peerListStr.isEmpty()) return;
         String[] entries = peerListStr.split(",");
         for (String entry : entries) {
@@ -135,6 +141,33 @@ public class PeerManager {
 
     public String getLocalUsername() { return localUsername; }
     public void setLocalUsername(String localUsername) { this.localUsername = localUsername; }
+
+    public String getLocalHost() { return localHost; }
+    public void setLocalHost(String localHost) { this.localHost = localHost; }
+
+    public int getLocalPort() { return localPort; }
+    public void setLocalPort(int localPort) { this.localPort = localPort; }
+
+    public int getWebPort() { return webPort; }
+    public void setWebPort(int webPort) { this.webPort = webPort; }
+
+    public boolean isRegisteredToBootstrap() { return registeredToBootstrap; }
+
+    public String getLastBootstrapError() { return lastBootstrapError; }
+
+    public void markBootstrapRegistrationSuccess() {
+        this.registeredToBootstrap = true;
+        this.lastBootstrapError = null;
+    }
+
+    public void markBootstrapRegistrationFailure(String error) {
+        this.registeredToBootstrap = false;
+        this.lastBootstrapError = error;
+    }
+
+    public void clearKnownPeers() {
+        knownPeers.clear();
+    }
 
     public void shutdown() {
         dbManager.close();

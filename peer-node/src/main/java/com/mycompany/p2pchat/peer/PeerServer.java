@@ -27,13 +27,11 @@ public class PeerServer {
     private ServerSocket serverSocket;
     private final ExecutorService threadPool = Executors.newCachedThreadPool();
     private volatile boolean running = false;
-    private final String localUsername;
     private WebServer webServer;
 
-    public PeerServer(int port, PeerManager peerManager, String localUsername) {
+    public PeerServer(int port, PeerManager peerManager) {
         this.port = port;
         this.peerManager = peerManager;
-        this.localUsername = localUsername;
     }
 
     public void setWebServer(WebServer webServer) {
@@ -199,7 +197,7 @@ public class PeerServer {
     private void sendAck(Message original, Socket socket) {
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Message ack = ProtocolHandler.createAck(original.getMessageId(), localUsername);
+            Message ack = ProtocolHandler.createAck(original.getMessageId(), peerManager.getLocalUsername());
             out.println(JsonUtil.toJson(ack));
             out.flush();
         } catch (IOException e) {

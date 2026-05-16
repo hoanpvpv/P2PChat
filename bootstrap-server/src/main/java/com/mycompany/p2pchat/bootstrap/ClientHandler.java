@@ -50,6 +50,7 @@ public class ClientHandler implements Runnable {
     private void handleMessage(Message message) {
         String type = message.getType();
         logger.info("Received [" + type + "] from " + message.getSender());
+        bootstrapServer.getEventLog().info("MESSAGE_" + type, message.getSender(), "Received " + type + " request");
 
         try {
             switch (MessageType.valueOf(type)) {
@@ -79,6 +80,7 @@ public class ClientHandler implements Runnable {
     private void handleRegister(Message message) {
         String[] parts = message.getContent().split(":");
         if (parts.length != 2) {
+            bootstrapServer.getEventLog().warn("REGISTER_INVALID", message.getSender(), "Invalid register format");
             send(ProtocolHandler.createError("Invalid register format. Use host:port"));
             return;
         }
@@ -90,9 +92,11 @@ public class ClientHandler implements Runnable {
         boolean wasAlreadyKnown = registry.contains(peerInfo.getUsername());
         if (wasAlreadyKnown) {
             registry.unregister(peerInfo.getUsername());
+            bootstrapServer.getEventLog().warn("REGISTER_REPLACE", peerInfo.getUsername(), "Existing peer registration replaced");
         }
 
         registry.register(peerInfo);
+        bootstrapServer.getEventLog().info("REGISTER", peerInfo.getUsername(), host + ":" + port);
 
         String peerList = registry.getPeerListJson();
         send(ProtocolHandler.createRegisterAck(peerList));
@@ -108,6 +112,7 @@ public class ClientHandler implements Runnable {
 
     private void handleHeartbeat(Message message) {
         registry.updateHeartbeat(message.getSender());
+        bootstrapServer.getEventLog().info("HEARTBEAT", message.getSender(), "Heartbeat acknowledged");
         String peerList = registry.getPeerListJson();
         Message ack = ProtocolHandler.createHeartbeatAck();
         ack.setContent(peerList);
@@ -115,12 +120,14 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleDiscover(Message message) {
+        bootstrapServer.getEventLog().info("DISCOVER", message.getSender(), "Peer list requested");
         String peerList = registry.getPeerListJson();
         send(ProtocolHandler.createPeerList(peerList));
     }
 
     private void handleStoreMessage(Message message) {
         registry.storeOfflineMessage(message.getReceiver(), message);
+        bootstrapServer.getEventLog().info("STORE_MESSAGE", message.getReceiver(), "Stored offline message from " + message.getSender());
         send(ProtocolHandler.createAck(message.getMessageId(), "bootstrap"));
     }
 
@@ -128,6 +135,7 @@ public class ClientHandler implements Runnable {
         String username = message.getSender();
         registry.unregister(username);
         bootstrapServer.broadcastPeerLeave(username);
+        bootstrapServer.getEventLog().info("LEAVE", username, "Peer left gracefully");
         logger.info("Peer left: " + username);
     }
 

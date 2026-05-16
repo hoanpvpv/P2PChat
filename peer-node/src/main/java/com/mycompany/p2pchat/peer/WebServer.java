@@ -5,6 +5,7 @@ import com.mycompany.p2pchat.database.MessageRepository;
 import com.mycompany.p2pchat.model.ChatGroup;
 import com.mycompany.p2pchat.model.Message;
 import com.mycompany.p2pchat.model.PeerInfo;
+import com.mycompany.p2pchat.protocol.ProtocolHandler;
 import com.mycompany.p2pchat.protocol.JsonUtil;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 import io.javalin.Javalin;
@@ -22,17 +23,17 @@ public class WebServer {
     private static final Gson gson = new Gson();
 
     private final PeerManager peerManager;
-    private final String localUsername;
     private final PeerClient peerClient;
+    private final PeerNode peerNode;
     private final int port;
     private Javalin app;
     private final List<io.javalin.websocket.WsContext> wsClients = new CopyOnWriteArrayList<>();
 
-    public WebServer(int port, PeerManager peerManager, String localUsername, PeerClient peerClient) {
+    public WebServer(int port, PeerManager peerManager, PeerClient peerClient, PeerNode peerNode) {
         this.port = port;
         this.peerManager = peerManager;
-        this.localUsername = localUsername;
         this.peerClient = peerClient;
+        this.peerNode = peerNode;
     }
 
     public void start() {
@@ -87,8 +88,15 @@ public class WebServer {
     private void registerApiRoutes() {
         app.get("/api/info", ctx -> {
             Map<String, Object> info = new HashMap<>();
-            info.put("username", localUsername);
+            info.put("username", peerManager.getLocalUsername());
+            info.put("host", peerManager.getLocalHost());
+            info.put("peerPort", peerManager.getLocalPort());
+            info.put("webPort", peerManager.getWebPort());
+            info.put("bootstrapHost", peerManager.getBootstrapHost());
+            info.put("bootstrapPort", peerManager.getBootstrapPort());
             info.put("bootstrap", peerManager.getBootstrapHost() + ":" + peerManager.getBootstrapPort());
+            info.put("registered", peerManager.isRegisteredToBootstrap());
+            info.put("lastBootstrapError", peerManager.getLastBootstrapError());
             ctx.contentType("application/json");
             ctx.result(gson.toJson(info));
         });
@@ -100,6 +108,10 @@ public class WebServer {
         });
 
         app.get("/api/discover", ctx -> {
+            if (!peerManager.isRegisteredToBootstrap()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Peer is not connected to bootstrap")));
+                return;
+            }
             try (java.net.Socket socket = new java.net.Socket(
                     peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
                 socket.setSoTimeout(3000);
@@ -107,7 +119,7 @@ public class WebServer {
                 java.io.BufferedReader in = new java.io.BufferedReader(
                         new java.io.InputStreamReader(socket.getInputStream()));
 
-                Message discover = com.mycompany.p2pchat.protocol.ProtocolHandler.createDiscover(localUsername);
+                Message discover = com.mycompany.p2pchat.protocol.ProtocolHandler.createDiscover(peerManager.getLocalUsername());
                 out.println(JsonUtil.toJson(discover));
                 out.flush();
 
@@ -128,7 +140,7 @@ public class WebServer {
         app.get("/api/history/{peerName}", ctx -> {
             String peerName = ctx.pathParam("peerName");
             MessageRepository repo = peerManager.getMessageRepository();
-            List<Message> messages = repo.getChatHistory(localUsername, peerName);
+            List<Message> messages = repo.getChatHistory(peerManager.getLocalUsername(), peerName);
             ctx.contentType("application/json");
             ctx.result(gson.toJson(messages));
         });
@@ -155,9 +167,45 @@ public class WebServer {
                 ctx.status(400).result("Missing receiver or content");
                 return;
             }
-            boolean sent = peerClient.sendDirectMessage(localUsername, receiver, content);
+            boolean sent = peerClient.sendDirectMessage(peerManager.getLocalUsername(), receiver, content);
             ctx.contentType("application/json");
             ctx.result(gson.toJson(Map.of("sent", String.valueOf(sent))));
+        });
+
+        app.post("/api/register", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String username = body.get("username") != null ? body.get("username").toString().trim() : "";
+            String bootstrapHost = body.get("bootstrapHost") != null ? body.get("bootstrapHost").toString().trim() : "";
+            String host = body.get("host") != null ? body.get("host").toString().trim() : "";
+            Number bootstrapPortValue = body.get("bootstrapPort") instanceof Number ? (Number) body.get("bootstrapPort") : null;
+            int bootstrapPort = bootstrapPortValue != null ? bootstrapPortValue.intValue() : peerManager.getBootstrapPort();
+
+            if (username.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing username")));
+                return;
+            }
+            if (bootstrapHost.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing bootstrapHost")));
+                return;
+            }
+            if (host.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing host")));
+                return;
+            }
+
+            boolean registered = peerNode.connectToBootstrap(username, host, bootstrapHost, bootstrapPort);
+            Map<String, Object> response = new HashMap<>();
+            response.put("username", peerManager.getLocalUsername());
+            response.put("registered", registered);
+            response.put("bootstrapHost", peerManager.getBootstrapHost());
+            response.put("bootstrapPort", peerManager.getBootstrapPort());
+            response.put("host", peerManager.getLocalHost());
+            response.put("lastBootstrapError", peerManager.getLastBootstrapError());
+            response.put("peers", peerManager.getOnlinePeers());
+
+            ctx.contentType("application/json");
+            ctx.status(registered ? 200 : 400);
+            ctx.result(gson.toJson(response));
         });
 
         app.post("/api/broadcast", ctx -> {
@@ -167,7 +215,7 @@ public class WebServer {
                 ctx.status(400).result("Missing content");
                 return;
             }
-            peerClient.sendBroadcast(localUsername, content);
+            peerClient.sendBroadcast(peerManager.getLocalUsername(), content);
             ctx.contentType("application/json");
             ctx.result(gson.toJson(Map.of("sent", "true")));
         });
@@ -205,7 +253,7 @@ public class WebServer {
                 ctx.status(400).result("Missing groupName or content");
                 return;
             }
-            peerClient.sendGroupMessage(localUsername, groupName, content);
+            peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupName, content);
             ctx.contentType("application/json");
             ctx.result(gson.toJson(Map.of("sent", "true")));
         });

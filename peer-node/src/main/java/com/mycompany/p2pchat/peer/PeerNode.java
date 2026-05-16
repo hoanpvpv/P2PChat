@@ -18,34 +18,31 @@ import java.util.logging.Logger;
 public class PeerNode {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerNode.class.getName());
-    private final String username;
-    private final String host;
     private final int port;
-    private final String bootstrapHost;
-    private final int bootstrapPort;
     private final int webPort;
     private final PeerManager peerManager;
     private final PeerServer peerServer;
     private final PeerClient peerClient;
     private final WebServer webServer;
     private volatile boolean running = false;
+    private volatile boolean heartbeatStarted = false;
 
-    public PeerNode(String username, String host, int port, String bootstrapHost, int bootstrapPort, int webPort) {
-        this.username = username;
-        this.host = host;
+    public PeerNode(int port, int webPort) {
         this.port = port;
-        this.bootstrapHost = bootstrapHost;
-        this.bootstrapPort = bootstrapPort;
         this.webPort = webPort;
 
-        this.peerManager = new PeerManager(username);
-        this.peerManager.setBootstrapHost(bootstrapHost);
-        this.peerManager.setBootstrapPort(bootstrapPort);
-        this.peerManager.setLocalUsername(username);
+        this.peerManager = new PeerManager("peer-" + port);
+        this.peerManager.setBootstrapHost("localhost");
+        this.peerManager.setBootstrapPort(com.mycompany.p2pchat.utils.Constants.DEFAULT_BOOTSTRAP_PORT);
+        this.peerManager.setLocalUsername("");
+        this.peerManager.setLocalHost("localhost");
+        this.peerManager.setLocalPort(port);
+        this.peerManager.setWebPort(webPort);
+        this.peerManager.markBootstrapRegistrationFailure("Peer has not been connected to a bootstrap server yet");
 
-        this.peerServer = new PeerServer(port, peerManager, username);
+        this.peerServer = new PeerServer(port, peerManager);
         this.peerClient = new PeerClient(peerManager);
-        this.webServer = new WebServer(webPort, peerManager, username, peerClient);
+        this.webServer = new WebServer(webPort, peerManager, peerClient, this);
         this.peerServer.setWebServer(webServer);
     }
 
@@ -54,29 +51,39 @@ public class PeerNode {
         peerServer.start();
         webServer.start();
 
-        boolean registered = registerWithBootstrap();
-        if (!registered) {
-            System.out.println("[WARN] Could not register with bootstrap server. Running in standalone mode.");
-        }
-
-        startHeartbeat();
-
-        System.out.println("=== P2PChat - " + username + " ===");
+        System.out.println("=== P2PChat Peer ===");
         System.out.println("Peer server listening on port " + port);
         System.out.println("Web UI: http://localhost:" + webPort);
-        System.out.println("Bootstrap server: " + bootstrapHost + ":" + bootstrapPort);
-        System.out.println("Type /help for available commands.\n");
+        System.out.println("Open the web UI and enter username, host, bootstrap host, and bootstrap port to connect.");
+        System.out.println("Type /help for available commands after connecting.\n");
 
         startCli();
     }
 
+    public synchronized boolean connectToBootstrap(String username, String host, String bootstrapHost, int bootstrapPort) {
+        peerManager.setLocalUsername(username);
+        peerManager.setLocalHost(host);
+        peerManager.setBootstrapHost(bootstrapHost);
+        peerManager.setBootstrapPort(bootstrapPort);
+        peerManager.clearKnownPeers();
+
+        boolean registered = registerWithBootstrap();
+        if (registered && !heartbeatStarted) {
+            startHeartbeat();
+        }
+        return registered;
+    }
+
     private boolean registerWithBootstrap() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
             socket.setSoTimeout(5000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            Message registerMsg = ProtocolHandler.createRegister(username, host, port);
+            Message registerMsg = ProtocolHandler.createRegister(
+                    peerManager.getLocalUsername(),
+                    peerManager.getLocalHost(),
+                    port);
             out.println(JsonUtil.toJson(registerMsg));
             out.flush();
 
@@ -85,23 +92,30 @@ public class PeerNode {
                 Message response = JsonUtil.fromJson(responseLine.trim());
                 if ("REGISTER_ACK".equals(response.getType())) {
                     peerManager.parsePeerList(response.getContent());
+                    peerManager.markBootstrapRegistrationSuccess();
                     System.out.println("[BOOTSTRAP] Registered. Online peers: " +
                             peerManager.getOnlinePeers().stream().map(PeerInfo::getUsername).toList());
                     return true;
                 }
             }
         } catch (IOException e) {
+            peerManager.markBootstrapRegistrationFailure(e.getMessage());
             logger.severe("Failed to register with bootstrap: " + e.getMessage());
+            return false;
         }
+        peerManager.markBootstrapRegistrationFailure("Bootstrap server rejected registration");
         return false;
     }
 
     private void startHeartbeat() {
+        heartbeatStarted = true;
         Thread heartbeatThread = new Thread(() -> {
             while (running) {
                 try {
                     Thread.sleep(com.mycompany.p2pchat.utils.Constants.HEARTBEAT_INTERVAL);
-                    sendHeartbeat();
+                    if (peerManager.isRegisteredToBootstrap()) {
+                        sendHeartbeat();
+                    }
                 } catch (InterruptedException e) {
                     break;
                 }
@@ -112,12 +126,12 @@ public class PeerNode {
     }
 
     private void sendHeartbeat() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            Message heartbeat = ProtocolHandler.createHeartbeat(username);
+            Message heartbeat = ProtocolHandler.createHeartbeat(peerManager.getLocalUsername());
             out.println(JsonUtil.toJson(heartbeat));
             out.flush();
 
@@ -127,9 +141,11 @@ public class PeerNode {
                 if ("HEARTBEAT_ACK".equals(response.getType()) && response.getContent() != null && !response.getContent().isEmpty()) {
                     peerManager.parsePeerList(response.getContent());
                 }
+                peerManager.markBootstrapRegistrationSuccess();
             }
         } catch (IOException e) {
             logger.fine("Heartbeat failed: " + e.getMessage());
+            peerManager.markBootstrapRegistrationFailure(e.getMessage());
         }
     }
 
@@ -201,6 +217,7 @@ public class PeerNode {
 
     private void printHelp() {
         System.out.println("=== Available Commands ===");
+        System.out.println("  Connect from the Web UI before using chat commands.");
         System.out.println("  /help                     - Show this help");
         System.out.println("  /peers                    - List online peers");
         System.out.println("  /discover                 - Refresh peer list from bootstrap");
@@ -227,12 +244,13 @@ public class PeerNode {
     }
 
     private void discoverPeers() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        if (!requireRegistration()) return;
+        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            Message discover = ProtocolHandler.createDiscover(username);
+            Message discover = ProtocolHandler.createDiscover(peerManager.getLocalUsername());
             out.println(JsonUtil.toJson(discover));
             out.flush();
 
@@ -251,6 +269,7 @@ public class PeerNode {
     }
 
     private void sendDirectMsg(String args) {
+        if (!requireRegistration()) return;
         String[] parts = args.split("\\s+", 2);
         if (parts.length < 2) {
             System.out.println("Usage: /msg <peer> <message>");
@@ -258,13 +277,14 @@ public class PeerNode {
         }
         String receiver = parts[0];
         String content = parts[1];
-        boolean sent = peerClient.sendDirectMessage(username, receiver, content);
+        boolean sent = peerClient.sendDirectMessage(peerManager.getLocalUsername(), receiver, content);
         if (sent) {
             System.out.println("[SENT] -> " + receiver + ": " + content);
         }
     }
 
     private void handleGroupCommand(String args) {
+        if (!requireRegistration()) return;
         String[] parts = args.split("\\s+");
         if (parts.length < 1) {
             System.out.println("Usage: /group <create|add|list|msg> ...");
@@ -287,7 +307,7 @@ public class PeerNode {
                 if (parts.length < 3) { System.out.println("Usage: /group msg <name> <message>"); return; }
                 String groupName = parts[1];
                 String content = parts[2];
-                peerClient.sendGroupMessage(username, groupName, content);
+                peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupName, content);
                 System.out.println("[GROUP-SENT] [" + groupName + "]: " + content);
                 break;
             default:
@@ -297,7 +317,7 @@ public class PeerNode {
 
     private void showHistory(String peerName) {
         MessageRepository repo = peerManager.getMessageRepository();
-        var messages = repo.getChatHistory(username, peerName);
+        var messages = repo.getChatHistory(peerManager.getLocalUsername(), peerName);
         if (messages.isEmpty()) {
             System.out.println("No chat history with " + peerName);
             return;
@@ -305,21 +325,32 @@ public class PeerNode {
         System.out.println("=== Chat history with " + peerName + " ===");
         for (Message msg : messages) {
             String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(msg.getTimestamp());
-            String direction = msg.getSender().equals(username) ? "you -> " + msg.getReceiver() : msg.getSender() + " -> you";
+            String direction = msg.getSender().equals(peerManager.getLocalUsername()) ? "you -> " + msg.getReceiver() : msg.getSender() + " -> you";
             System.out.println("  [" + time + "] " + direction + ": " + msg.getContent());
         }
     }
 
     private void notifyBootstrapLeave() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        if (!peerManager.isRegisteredToBootstrap()) {
+            return;
+        }
+        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
             socket.setSoTimeout(2000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Message leaveMsg = ProtocolHandler.createPeerLeave(username);
+            Message leaveMsg = ProtocolHandler.createPeerLeave(peerManager.getLocalUsername());
             out.println(JsonUtil.toJson(leaveMsg));
             out.flush();
         } catch (IOException e) {
             // ignore
         }
+    }
+
+    private boolean requireRegistration() {
+        if (peerManager.isRegisteredToBootstrap()) {
+            return true;
+        }
+        System.out.println("[WARN] This peer is not connected yet. Open the Web UI and complete the connection form first.");
+        return false;
     }
 
     public void shutdown() {

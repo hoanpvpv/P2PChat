@@ -8,5 +8,5 @@ RUN mvn clean package -B -DskipTests
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=build /app/target/bootstrap-server.jar /app/bootstrap-server.jar
-EXPOSE 8080
+EXPOSE 9000 9001
 ENTRYPOINT ["java", "-jar", "/app/bootstrap-server.jar"]

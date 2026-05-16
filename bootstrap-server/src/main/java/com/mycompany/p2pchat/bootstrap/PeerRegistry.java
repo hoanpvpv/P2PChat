@@ -78,7 +78,7 @@ public class PeerRegistry {
     }
 
     public void storeOfflineMessage(String receiver, Message message) {
-        offlineMessages.computeIfAbsent(receiver, k -> new ArrayList<>()).add(message);
+        offlineMessages.computeIfAbsent(receiver, k -> Collections.synchronizedList(new ArrayList<>())).add(message);
         logger.info("Stored offline message for " + receiver);
     }
 
@@ -92,5 +92,25 @@ public class PeerRegistry {
         return online.stream()
                 .map(p -> p.getUsername() + "@" + p.getHost() + ":" + p.getPort())
                 .collect(Collectors.joining(","));
+    }
+
+    public int getOnlinePeerCount() {
+        return (int) peers.values().stream()
+                .filter(PeerInfo::isOnline)
+                .count();
+    }
+
+    public int getAllPeerCount() {
+        return peers.size();
+    }
+
+    public int getOfflineMessageCount() {
+        int total = 0;
+        for (List<Message> messages : offlineMessages.values()) {
+            synchronized (messages) {
+                total += messages.size();
+            }
+        }
+        return total;
     }
 }

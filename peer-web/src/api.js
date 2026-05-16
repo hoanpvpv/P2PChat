@@ -6,6 +6,20 @@ export async function fetchInfo() {
   return res.json();
 }
 
+export async function registerPeer(payload) {
+  const res = await fetch(`${API_BASE}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || data.lastBootstrapError || 'Registration failed');
+  }
+  return data;
+}
+
 export async function fetchPeers() {
   const res = await fetch(`${API_BASE}/peers`);
   return res.json();
