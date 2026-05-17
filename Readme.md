@@ -313,8 +313,6 @@ Kết quả: thư mục `peer-web/build/` chứa static files.
 
 ```bash
 cd /path/to/P2PChat
-rm -rf peer-node/src/main/resources/static
-cp -r peer-web/build peer-node/src/main/resources/static
 
 Remove-Item -Recurse -Force peer-node/src/main/resources/static
 Copy-Item -Recurse peer-web/build peer-node/src/main/resources/static
