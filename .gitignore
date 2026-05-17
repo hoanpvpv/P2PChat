@@ -40,3 +40,6 @@ logs/
 
 # Docker volumes
 data/
+
+# Generated files
+**dependency-reduced-pom.xml
