@@ -18,60 +18,64 @@ import java.util.logging.Logger;
 public class PeerNode {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerNode.class.getName());
-    private final int port;
+    private int port;
     private final int webPort;
-    private final PeerManager peerManager;
-    private final PeerServer peerServer;
+    private PeerManager peerManager;
+    private PeerServer peerServer;
     private final PeerClient peerClient;
-    private final WebServer webServer;
+    private WebServer webServer;
     private volatile boolean running = false;
     private volatile boolean heartbeatStarted = false;
 
-    public PeerNode(int port, int webPort) {
-        this.port = port;
+    public PeerNode(int webPort) {
+        this.port = com.mycompany.p2pchat.utils.Constants.DEFAULT_PEER_PORT;
         this.webPort = webPort;
 
-        this.peerManager = new PeerManager("peer-" + port);
+        this.peerManager = new PeerManager("peer-" + this.port);
         this.peerManager.setBootstrapHost("localhost");
         this.peerManager.setBootstrapPort(com.mycompany.p2pchat.utils.Constants.DEFAULT_BOOTSTRAP_PORT);
         this.peerManager.setLocalUsername("");
         this.peerManager.setLocalHost("localhost");
-        this.peerManager.setLocalPort(port);
-        this.peerManager.setWebPort(webPort);
+        this.peerManager.setLocalPort(this.port);
+        this.peerManager.setWebPort(this.webPort);
         this.peerManager.markBootstrapRegistrationFailure("Peer has not been connected to a bootstrap server yet");
 
-        this.peerServer = new PeerServer(port, peerManager);
+        this.peerServer = null;
         this.peerClient = new PeerClient(peerManager);
         this.webServer = new WebServer(webPort, peerManager, peerClient, this);
-        this.peerServer.setWebServer(webServer);
     }
 
     public void start() {
         running = true;
-        peerServer.start();
         webServer.start();
 
         System.out.println("=== P2PChat Peer ===");
-        System.out.println("Peer server listening on port " + port);
         System.out.println("Web UI: http://localhost:" + webPort);
-        System.out.println("Open the web UI and enter username, host, bootstrap host, and bootstrap port to connect.");
+        System.out.println("Open the web UI to set up your peer.");
         System.out.println("Type /help for available commands after connecting.\n");
 
         startCli();
     }
 
-    public synchronized boolean connectToBootstrap(String username, String host, String bootstrapHost, int bootstrapPort) {
+    public synchronized void initPeer(int peerPort, String username) {
+        this.port = peerPort;
+
+        if (peerServer != null) {
+            peerServer.stop();
+        }
+
+        this.peerServer = new PeerServer(peerPort, peerManager);
+        this.peerServer.setWebServer(webServer);
+        this.peerServer.start();
+
+        peerManager.setLocalPort(peerPort);
         peerManager.setLocalUsername(username);
-        peerManager.setLocalHost(host);
-        peerManager.setBootstrapHost(bootstrapHost);
-        peerManager.setBootstrapPort(bootstrapPort);
         peerManager.clearKnownPeers();
 
         boolean registered = registerWithBootstrap();
         if (registered && !heartbeatStarted) {
             startHeartbeat();
         }
-        return registered;
     }
 
     private boolean registerWithBootstrap() {
@@ -198,7 +202,7 @@ public class PeerNode {
                     System.out.println("Usage: /broadcast <message>");
                     break;
                 }
-                peerClient.sendBroadcast(username, parts[1]);
+                peerClient.sendBroadcast(peerManager.getLocalUsername(), parts[1]);
                 break;
             case "/history":
                 if (parts.length < 2) {
@@ -358,7 +362,9 @@ public class PeerNode {
         System.out.println("\nShutting down peer...");
         notifyBootstrapLeave();
         webServer.stop();
-        peerServer.stop();
+        if (peerServer != null) {
+            peerServer.stop();
+        }
         peerClient.shutdown();
         peerManager.shutdown();
         System.out.println("Goodbye!");

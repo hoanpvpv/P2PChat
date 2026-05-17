@@ -172,39 +172,47 @@ public class WebServer {
             ctx.result(gson.toJson(Map.of("sent", String.valueOf(sent))));
         });
 
-        app.post("/api/register", ctx -> {
+        app.get("/api/auto-detect-host", ctx -> {
+            Map<String, Object> result = new HashMap<>();
+            try (java.net.Socket s = new java.net.Socket(
+                    peerManager.getBootstrapHost(),
+                    peerManager.getBootstrapPort())) {
+                s.setSoTimeout(2000);
+                String localIp = s.getLocalAddress().getHostAddress();
+                result.put("host", localIp);
+                result.put("status", "bootstrap_reachable");
+            } catch (Exception e) {
+                result.put("host", "localhost");
+                result.put("status", "bootstrap_unreachable");
+            }
+            ctx.contentType("application/json");
+            ctx.result(gson.toJson(result));
+        });
+
+        app.post("/api/init", ctx -> {
             Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
             String username = body.get("username") != null ? body.get("username").toString().trim() : "";
-            String bootstrapHost = body.get("bootstrapHost") != null ? body.get("bootstrapHost").toString().trim() : "";
-            String host = body.get("host") != null ? body.get("host").toString().trim() : "";
-            Number bootstrapPortValue = body.get("bootstrapPort") instanceof Number ? (Number) body.get("bootstrapPort") : null;
-            int bootstrapPort = bootstrapPortValue != null ? bootstrapPortValue.intValue() : peerManager.getBootstrapPort();
+            Number peerPortValue = body.get("peerPort") instanceof Number ? (Number) body.get("peerPort") : null;
+            int peerPort = peerPortValue != null ? peerPortValue.intValue() : 0;
 
             if (username.isEmpty()) {
                 ctx.status(400).result(gson.toJson(Map.of("error", "Missing username")));
                 return;
             }
-            if (bootstrapHost.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing bootstrapHost")));
-                return;
-            }
-            if (host.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing host")));
+            if (peerPort <= 0 || peerPort > 65535) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Invalid peer port")));
                 return;
             }
 
-            boolean registered = peerNode.connectToBootstrap(username, host, bootstrapHost, bootstrapPort);
+            peerNode.initPeer(peerPort, username);
+
             Map<String, Object> response = new HashMap<>();
+            response.put("initialized", true);
             response.put("username", peerManager.getLocalUsername());
-            response.put("registered", registered);
-            response.put("bootstrapHost", peerManager.getBootstrapHost());
-            response.put("bootstrapPort", peerManager.getBootstrapPort());
-            response.put("host", peerManager.getLocalHost());
+            response.put("peerPort", peerManager.getLocalPort());
+            response.put("registered", peerManager.isRegisteredToBootstrap());
             response.put("lastBootstrapError", peerManager.getLastBootstrapError());
-            response.put("peers", peerManager.getOnlinePeers());
-
             ctx.contentType("application/json");
-            ctx.status(registered ? 200 : 400);
             ctx.result(gson.toJson(response));
         });
 

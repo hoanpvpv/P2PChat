@@ -6,16 +6,20 @@ export async function fetchInfo() {
   return res.json();
 }
 
-export async function registerPeer(payload) {
-  const res = await fetch(`${API_BASE}/register`, {
+export async function autoDetectHost() {
+  const res = await fetch(`${API_BASE}/auto-detect-host`);
+  return res.json();
+}
+
+export async function initPeer(username, peerPort) {
+  const res = await fetch(`${API_BASE}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ username, peerPort }),
   });
-
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data.error || data.lastBootstrapError || 'Registration failed');
+    throw new Error(data.error || 'Initialization failed');
   }
   return data;
 }

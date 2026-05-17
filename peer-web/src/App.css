@@ -43,6 +43,21 @@ body {
   text-transform: uppercase;
 }
 
+.host-value {
+  color: #4caf50;
+}
+
+.required {
+  color: #e94560;
+  margin-left: 2px;
+}
+
+.input-readonly {
+  opacity: 0.6;
+  cursor: default;
+  border-style: dashed !important;
+}
+
 .registration-panel h1 {
   font-size: clamp(28px, 6vw, 44px);
   line-height: 1;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   fetchInfo, fetchPeers, fetchGroups, fetchHistory, fetchGroupHistory,
   sendMessage, sendGroupMessage, sendBroadcast, createGroup, addToGroup,
-  discoverPeers, connectWebSocket, registerPeer,
+  discoverPeers, connectWebSocket, autoDetectHost, initPeer,
 } from './api';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -25,13 +25,12 @@ export default function App() {
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [error, setError] = useState('');
-  const [registering, setRegistering] = useState(false);
-  const [registrationForm, setRegistrationForm] = useState({
+  const [initing, setIniting] = useState(false);
+  const [setupForm, setSetupForm] = useState({
     username: '',
-    host: '',
-    bootstrapHost: '',
-    bootstrapPort: '',
+    peerPort: '',
   });
+  const [detectedHost, setDetectedHost] = useState('');
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -66,11 +65,9 @@ export default function App() {
         fetchGroups(),
       ]);
       setInfo(infoData);
-      setRegistrationForm((prev) => ({
+      setSetupForm((prev) => ({
         username: prev.username || infoData.username || '',
-        host: prev.host || infoData.host || '',
-        bootstrapHost: prev.bootstrapHost || infoData.bootstrapHost || '',
-        bootstrapPort: prev.bootstrapPort || String(infoData.bootstrapPort || ''),
+        peerPort: prev.peerPort || String(infoData.peerPort || ''),
       }));
       setPeers(peersData || []);
       setGroups(groupsData || []);
@@ -85,6 +82,10 @@ export default function App() {
   }, [activeChat]);
 
   useEffect(() => {
+    autoDetectHost()
+      .then((data) => setDetectedHost(data.host || 'localhost'))
+      .catch(() => setDetectedHost('localhost'));
+
     refreshData();
     wsRef.current = connectWebSocket((event) => {
       const { type, data } = event;
@@ -175,105 +176,92 @@ export default function App() {
     }]);
   }, [info.username]);
 
-  const handleRegistrationChange = useCallback((event) => {
+  const handleSetupChange = useCallback((event) => {
     const { name, value } = event.target;
-    setRegistrationForm((prev) => ({ ...prev, [name]: value }));
+    setSetupForm((prev) => ({ ...prev, [name]: value }));
   }, []);
 
-  const handleRegister = useCallback(async (event) => {
+  const handleSetup = useCallback(async (event) => {
     event.preventDefault();
-    setRegistering(true);
+    setIniting(true);
     setError('');
     try {
-      await registerPeer({
-        username: registrationForm.username.trim(),
-        host: registrationForm.host.trim(),
-        bootstrapHost: registrationForm.bootstrapHost.trim(),
-        bootstrapPort: Number(registrationForm.bootstrapPort),
-      });
+      await initPeer(setupForm.username.trim(), Number(setupForm.peerPort));
       await refreshData();
     } catch (e) {
-      setError(e.message || 'Failed to register peer');
+      setError(e.message || 'Failed to initialize peer');
       setTimeout(() => setError(''), 4000);
     } finally {
-      setRegistering(false);
+      setIniting(false);
     }
-  }, [refreshData, registrationForm.bootstrapHost, registrationForm.bootstrapPort, registrationForm.host]);
+  }, [refreshData, setupForm.username, setupForm.peerPort]);
 
   if (!info.registered) {
     return (
       <div className="registration-shell">
         <div className="registration-panel">
-          <div className="registration-badge">Peer Registration</div>
-          <h1>Connect this peer to the bootstrap network.</h1>
+          <div className="registration-badge">Peer Setup</div>
+          <h1>Configure your peer node.</h1>
           <p className="registration-subtitle">
-            This peer process is already running. Use this form to publish its address
-            and register it with the bootstrap server before entering the chat UI.
+            Enter a username and choose a port for this peer. Your local IP will be
+            detected automatically. Once started, this peer will connect to the
+            bootstrap server on the default port.
           </p>
 
           <div className="registration-summary">
             <div>
-              <span className="summary-label">Peer Port</span>
-              <span className="summary-value">{info.peerPort || '-'}</span>
+              <span className="summary-label">Detected Host</span>
+              <span className="summary-value host-value">{detectedHost || 'detecting...'}</span>
             </div>
             <div>
               <span className="summary-label">Web Port</span>
               <span className="summary-value">{info.webPort || '-'}</span>
             </div>
+            <div>
+              <span className="summary-label">Bootstrap Server</span>
+              <span className="summary-value">localhost:9000</span>
+            </div>
           </div>
 
-          <form className="registration-form" onSubmit={handleRegister}>
+          <form className="registration-form" onSubmit={handleSetup}>
             <label>
-              <span>Username</span>
+              <span>Username <span className="required">*</span></span>
               <input
                 name="username"
-                value={registrationForm.username}
-                onChange={handleRegistrationChange}
-                placeholder="bob"
+                value={setupForm.username}
+                onChange={handleSetupChange}
+                placeholder="e.g. alice"
                 required
+                autoFocus
               />
             </label>
             <label>
-              <span>Peer Host</span>
+              <span>Peer Port <span className="required">*</span></span>
               <input
-                name="host"
-                value={registrationForm.host}
-                onChange={handleRegistrationChange}
-                placeholder="localhost or LAN IP"
-                required
-              />
-            </label>
-            <label>
-              <span>Bootstrap Host</span>
-              <input
-                name="bootstrapHost"
-                value={registrationForm.bootstrapHost}
-                onChange={handleRegistrationChange}
-                placeholder="localhost or server IP"
-                required
-              />
-            </label>
-            <label>
-              <span>Bootstrap Port</span>
-              <input
-                name="bootstrapPort"
+                name="peerPort"
                 type="number"
-                min="1"
+                min="1024"
                 max="65535"
-                value={registrationForm.bootstrapPort}
-                onChange={handleRegistrationChange}
-                placeholder="9000"
+                value={setupForm.peerPort}
+                onChange={handleSetupChange}
+                placeholder="5001"
                 required
               />
             </label>
-            <button type="submit" disabled={registering}>
-              {registering ? 'Connecting...' : 'Connect Peer'}
+            <label>
+              <span>Host (auto-detected)</span>
+              <input
+                type="text"
+                value={detectedHost || ''}
+                readOnly
+                className="input-readonly"
+              />
+            </label>
+            <button type="submit" disabled={initing}>
+              {initing ? 'Starting...' : 'Start Peer'}
             </button>
           </form>
 
-          <div className="registration-note">
-            <strong>Last error:</strong> {info.lastBootstrapError || 'No registration attempt yet.'}
-          </div>
           {error && <div className="error-toast">{error}</div>}
         </div>
       </div>
