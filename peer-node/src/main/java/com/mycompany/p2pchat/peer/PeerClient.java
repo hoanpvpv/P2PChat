@@ -1,150 +1,190 @@
 package com.mycompany.p2pchat.peer;
 
+import com.mycompany.p2pchat.model.GroupInfo;
 import com.mycompany.p2pchat.model.Message;
-import com.mycompany.p2pchat.model.PeerInfo;
 import com.mycompany.p2pchat.protocol.JsonUtil;
+import com.mycompany.p2pchat.protocol.MessageType;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
 import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
 import java.net.Socket;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
+/**
+ * Extended PeerClient — handles direct messages, group multicast,
+ * coordinator requests with fallback + idempotency, and broadcast.
+ */
 public class PeerClient {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerClient.class.getName());
     private final PeerManager peerManager;
-    private final ScheduledExecutorService retryExecutor = Executors.newSingleThreadScheduledExecutor();
-    private final ConcurrentMap<String, CompletableFuture<Boolean>> pendingAcks = new ConcurrentHashMap<>();
 
     public PeerClient(PeerManager peerManager) {
         this.peerManager = peerManager;
     }
 
+    // ==================== Direct Message ====================
+
     public boolean sendDirectMessage(String sender, String receiver, String content) {
-        PeerInfo peer = peerManager.getPeer(receiver);
+        var peer = peerManager.getPeer(receiver);
         if (peer == null) {
-            System.out.println("[ERROR] Peer not found: " + receiver);
+            logger.warning("Peer not found: " + receiver);
             return false;
         }
-
         Message message = ProtocolHandler.createDirectMessage(sender, receiver, content);
         peerManager.getMessageRepository().saveMessage(message);
-        return sendWithRetry(message, peer);
+        // Update recent peers cache
+        peerManager.getRecentPeersCache().upsert(receiver, peer.getAddress());
+        boolean sent = sendWithRetry(message, peer.getHost(), peer.getPort());
+        if (!sent) storeOfflineMessage(message, peer.getUsername());
+        return sent;
     }
 
-    public boolean sendGroupMessage(String sender, String groupName, String content) {
-        var group = peerManager.getChatGroup(groupName);
-        if (group == null) {
-            System.out.println("[ERROR] Group not found: " + groupName);
+    // ==================== Group Message (Data Plane) ====================
+
+    public boolean sendGroupMessage(String sender, String groupId, String content) {
+        GroupCache.GroupCacheEntry cache = peerManager.getGroupCache().get(groupId);
+        if (cache == null) {
+            logger.warning("Group cache not found: " + groupId);
+            return false;
+        }
+        if ("LEAVING".equals(cache.getGroupState())) {
+            logger.warning("Cannot send to group in LEAVING state: " + groupId);
             return false;
         }
 
-        Message message = ProtocolHandler.createGroupMessage(sender, groupName, content);
+        long clock = peerManager.getLamportClock().tick();
+        Message message = Message.builder()
+                .type(MessageType.GROUP_MESSAGE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(sender)
+                .groupId(groupId)
+                .groupName(cache.getGroupName())
+                .content(content)
+                .lamportClock(clock)
+                .cacheVersion(cache.getLocalVersion())
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        peerManager.getMessageRepository().saveMessage(message);
+
         boolean allSent = true;
-        for (String member : group.getMembers()) {
-            if (member.equals(sender)) continue;
-            PeerInfo peer = peerManager.getPeer(member);
-            if (peer != null && peer.isOnline()) {
-                if (!sendWithRetry(message, peer)) {
+        String myAddress = peerManager.getLocalAddress();
+        for (String memberAddress : cache.getMembers()) {
+            if (memberAddress.equals(myAddress)) continue;
+            String[] parts = memberAddress.split(":");
+            if (parts.length != 2) continue;
+            try {
+                if (!sendSingle(message, parts[0], Integer.parseInt(parts[1]))) {
                     allSent = false;
-                    System.out.println("[WARN] Failed to send to " + member);
+                    // Trigger lazy repair (TCP fail)
+                    peerManager.getLazyRepairManager().repair(groupId);
                 }
+            } catch (Exception e) {
+                allSent = false;
             }
         }
-        peerManager.getMessageRepository().saveMessage(message);
         return allSent;
     }
+
+    // ==================== Coordinator Requests with Fallback ====================
+
+    /**
+     * Send a request to coordinator C1→C2→C3 with hard cancel + idempotency.
+     */
+    public Message sendToCoordinator(String groupId, Message request) {
+        GroupCache.GroupCacheEntry cache = peerManager.getGroupCache().get(groupId);
+        if (cache == null) {
+            return createError("Group cache not found: " + groupId);
+        }
+
+        // Assign idempotency key if not already set
+        if (request.getRequestId() == null) {
+            request.setRequestId(UUID.randomUUID().toString());
+        }
+
+        List<String> coords = cache.getCoordinators();
+        for (String coord : coords) {
+            if (coord.equals(peerManager.getLocalAddress())) continue;
+            String[] parts = coord.split(":");
+            if (parts.length != 2) continue;
+            try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+                socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+
+                out.println(JsonUtil.toJson(request));
+                out.flush();
+
+                String resp = in.readLine();
+                if (resp != null) {
+                    return JsonUtil.fromJson(resp.trim());
+                }
+            } catch (Exception e) {
+                logger.warning("Coordinator " + coord + " timeout/error — trying next");
+            }
+        }
+        return createError("All coordinators unreachable for group: " + groupId);
+    }
+
+    // ==================== Broadcast ====================
 
     public void sendBroadcast(String sender, String content) {
         Message message = ProtocolHandler.createBroadcast(sender, content);
         peerManager.getMessageRepository().saveMessage(message);
-        for (PeerInfo peer : peerManager.getOnlinePeers()) {
-            sendSingle(message, peer);
+        for (var peer : peerManager.getOnlinePeers()) {
+            sendSingle(message, peer.getHost(), peer.getPort());
         }
-        System.out.println("[BROADCAST] Message sent to all peers.");
     }
 
-    private boolean sendWithRetry(Message message, PeerInfo peer) {
+    // ==================== TCP Helpers ====================
+
+    private boolean sendWithRetry(Message message, String host, int port) {
         for (int attempt = 1; attempt <= Constants.MAX_RETRIES; attempt++) {
-            CompletableFuture<Boolean> future = new CompletableFuture<>();
-            pendingAcks.put(message.getMessageId(), future);
-
-            if (sendSingle(message, peer)) {
-                try {
-                    Boolean acked = future.get(Constants.ACK_TIMEOUT, TimeUnit.MILLISECONDS);
-                    if (Boolean.TRUE.equals(acked)) {
-                        return true;
-                    }
-                } catch (TimeoutException e) {
-                    logger.warning("ACK timeout (attempt " + attempt + "/" + Constants.MAX_RETRIES + ") for " + peer.getUsername());
-                } catch (Exception e) {
-                    logger.warning("Error waiting for ACK: " + e.getMessage());
-                }
-            }
-
-            pendingAcks.remove(message.getMessageId());
+            if (sendSingle(message, host, port)) return true;
+            logger.warning("Retry " + attempt + "/" + Constants.MAX_RETRIES + " for " + host + ":" + port);
+            try { TimeUnit.MILLISECONDS.sleep(500); } catch (InterruptedException ignored) {}
         }
-
-        System.out.println("[WARN] Failed to deliver message to " + peer.getUsername() + " after " + Constants.MAX_RETRIES + " attempts. Storing offline.");
-        storeOfflineMessage(message, peer);
         return false;
     }
 
-    private boolean sendSingle(Message message, PeerInfo peer) {
-        try (Socket socket = new Socket(peer.getHost(), peer.getPort())) {
+    private boolean sendSingle(Message message, String host, int port) {
+        try (Socket socket = new Socket(host, port)) {
             socket.setSoTimeout(Constants.ACK_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
             out.println(JsonUtil.toJson(message));
             out.flush();
-
-            String responseLine = in.readLine();
-            if (responseLine != null) {
-                Message response = JsonUtil.fromJson(responseLine.trim());
-                if (response != null && "ACK".equals(response.getType())) {
-                    handleAck(response.getContent());
-                }
-            }
-            return true;
+            String resp = in.readLine();
+            return resp != null && resp.contains("ACK");
         } catch (IOException e) {
-            logger.warning("Failed to send to " + peer.getUsername() + ": " + e.getMessage());
+            logger.fine("Send failed to " + host + ":" + port + ": " + e.getMessage());
             return false;
         }
     }
 
-    public void handleAck(String originalMessageId) {
-        CompletableFuture<Boolean> future = pendingAcks.remove(originalMessageId);
-        if (future != null) {
-            future.complete(true);
-        }
-    }
-
-    private void storeOfflineMessage(Message message, PeerInfo peer) {
+    private void storeOfflineMessage(Message message, String receiverUsername) {
+        if (!peerManager.isRegisteredToBootstrap()) return;
         try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+            socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-            Message storeMsg = ProtocolHandler.createStoreMessage(message.getSender(), peer.getUsername(), message.getContent());
+            Message storeMsg = ProtocolHandler.createStoreMessage(
+                    message.getSender(), receiverUsername, message.getContent());
             out.println(JsonUtil.toJson(storeMsg));
             out.flush();
-
-            String line = in.readLine();
-            if (line != null) {
-                logger.info("Offline message stored on bootstrap for " + peer.getUsername());
-            }
         } catch (IOException e) {
             logger.warning("Failed to store offline message: " + e.getMessage());
         }
     }
 
-    public void shutdown() {
-        retryExecutor.shutdown();
+    private Message createError(String msg) {
+        return Message.builder().type(MessageType.ERROR.name()).content(msg).build();
     }
+
+    public void shutdown() {}
 }

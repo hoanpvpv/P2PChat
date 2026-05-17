@@ -2,18 +2,20 @@ package com.mycompany.p2pchat.peer;
 
 import com.google.gson.Gson;
 import com.mycompany.p2pchat.database.MessageRepository;
-import com.mycompany.p2pchat.model.ChatGroup;
+import com.mycompany.p2pchat.model.GroupInfo;
 import com.mycompany.p2pchat.model.Message;
 import com.mycompany.p2pchat.model.PeerInfo;
-import com.mycompany.p2pchat.protocol.ProtocolHandler;
 import com.mycompany.p2pchat.protocol.JsonUtil;
+import com.mycompany.p2pchat.protocol.MessageType;
+import com.mycompany.p2pchat.protocol.ProtocolHandler;
+import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 import io.javalin.Javalin;
 import io.javalin.http.staticfiles.Location;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.net.Socket;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
@@ -28,6 +30,7 @@ public class WebServer {
     private final int port;
     private Javalin app;
     private final List<io.javalin.websocket.WsContext> wsClients = new CopyOnWriteArrayList<>();
+    private CoordinatorManager coordinatorManager;
 
     public WebServer(int port, PeerManager peerManager, PeerClient peerClient, PeerNode peerNode) {
         this.port = port;
@@ -36,6 +39,8 @@ public class WebServer {
         this.peerNode = peerNode;
     }
 
+    public void setCoordinatorManager(CoordinatorManager cm) { this.coordinatorManager = cm; }
+
     public void start() {
         app = Javalin.create(config -> {
             config.staticFiles.add("/static", Location.CLASSPATH);
@@ -43,49 +48,34 @@ public class WebServer {
 
         app.exception(Exception.class, (e, ctx) -> {
             logger.severe("API error: " + e.getMessage());
-            ctx.status(500);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("error", e.getMessage() != null ? e.getMessage() : "Internal error")));
+            ctx.status(500).contentType("application/json")
+               .result(gson.toJson(Map.of("error", e.getMessage() != null ? e.getMessage() : "Internal error")));
         });
 
+        // WebSocket
         app.ws("/ws", ws -> {
-            ws.onConnect(ctx -> {
-                wsClients.add(ctx);
-                logger.info("WebSocket client connected");
-            });
-            ws.onClose(ctx -> {
-                wsClients.remove(ctx);
-                logger.info("WebSocket client disconnected");
-            });
-            ws.onMessage(ctx -> {
-                String msg = ctx.message();
-                logger.fine("WebSocket received: " + msg);
-            });
+            ws.onConnect(ctx -> { wsClients.add(ctx); logger.fine("WS client connected"); });
+            ws.onClose(ctx -> { wsClients.remove(ctx); logger.fine("WS client disconnected"); });
         });
 
-        registerApiRoutes();
-
+        registerRoutes();
         app.start(port);
-        logger.info("Web server started on port " + port);
+        logger.info("WebServer started on port " + port);
     }
 
-    public void stop() {
-        if (app != null) {
-            app.stop();
-        }
-    }
+    public void stop() { if (app != null) app.stop(); }
 
     public void broadcastToWeb(String type, Object data) {
         Map<String, Object> event = new HashMap<>();
         event.put("type", type);
         event.put("data", data);
         String json = gson.toJson(event);
-        for (io.javalin.websocket.WsContext client : wsClients) {
-            client.send(json);
-        }
+        wsClients.forEach(c -> { try { c.send(json); } catch (Exception ignored) {} });
     }
 
-    private void registerApiRoutes() {
+    private void registerRoutes() {
+
+        // ── Info ──
         app.get("/api/info", ctx -> {
             Map<String, Object> info = new HashMap<>();
             info.put("username", peerManager.getLocalUsername());
@@ -94,168 +84,368 @@ public class WebServer {
             info.put("webPort", peerManager.getWebPort());
             info.put("bootstrapHost", peerManager.getBootstrapHost());
             info.put("bootstrapPort", peerManager.getBootstrapPort());
-            info.put("bootstrap", peerManager.getBootstrapHost() + ":" + peerManager.getBootstrapPort());
+            info.put("address", peerManager.getLocalAddress());
             info.put("registered", peerManager.isRegisteredToBootstrap());
             info.put("lastBootstrapError", peerManager.getLastBootstrapError());
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(info));
+            ctx.contentType("application/json").result(gson.toJson(info));
         });
 
-        app.get("/api/peers", ctx -> {
-            List<PeerInfo> peers = peerManager.getOnlinePeers();
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(peers));
-        });
+        // ── Peers ──
+        app.get("/api/peers", ctx -> ctx.contentType("application/json")
+                .result(gson.toJson(peerManager.getOnlinePeers())));
 
         app.get("/api/discover", ctx -> {
             if (!peerManager.isRegisteredToBootstrap()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Peer is not connected to bootstrap")));
+                ctx.status(400).result(gson.toJson(Map.of("error", "Not connected to bootstrap")));
                 return;
             }
-            try (java.net.Socket socket = new java.net.Socket(
-                    peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
-                socket.setSoTimeout(3000);
-                java.io.PrintWriter out = new java.io.PrintWriter(socket.getOutputStream(), true);
-                java.io.BufferedReader in = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(socket.getInputStream()));
-
-                Message discover = com.mycompany.p2pchat.protocol.ProtocolHandler.createDiscover(peerManager.getLocalUsername());
-                out.println(JsonUtil.toJson(discover));
-                out.flush();
-
-                String line = in.readLine();
-                if (line != null) {
-                    Message response = JsonUtil.fromJson(line.trim());
-                    if ("PEER_LIST".equals(response.getType())) {
-                        peerManager.parsePeerList(response.getContent());
-                    }
-                }
-            } catch (Exception e) {
-                logger.warning("Discover failed: " + e.getMessage());
-            }
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(peerManager.getOnlinePeers()));
+            discoverPeers();
+            ctx.contentType("application/json").result(gson.toJson(peerManager.getOnlinePeers()));
         });
 
+        // ── Messages ──
         app.get("/api/history/{peerName}", ctx -> {
             String peerName = ctx.pathParam("peerName");
-            MessageRepository repo = peerManager.getMessageRepository();
-            List<Message> messages = repo.getChatHistory(peerManager.getLocalUsername(), peerName);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(messages));
+            List<Message> msgs = peerManager.getMessageRepository()
+                    .getChatHistory(peerManager.getLocalUsername(), peerName);
+            ctx.contentType("application/json").result(gson.toJson(msgs));
         });
 
-        app.get("/api/group-history/{groupName}", ctx -> {
-            String groupName = ctx.pathParam("groupName");
-            MessageRepository repo = peerManager.getMessageRepository();
-            List<Message> messages = repo.getGroupHistory(groupName);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(messages));
-        });
-
-        app.get("/api/groups", ctx -> {
-            Map<String, ChatGroup> groups = peerManager.getAllGroups();
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(groups.values()));
+        app.get("/api/group-history/{groupId}", ctx -> {
+            String groupId = ctx.pathParam("groupId");
+            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+            String groupName = entry != null ? entry.getGroupName() : groupId;
+            List<Message> msgs = peerManager.getMessageRepository().getGroupHistory(groupName);
+            ctx.contentType("application/json").result(gson.toJson(msgs));
         });
 
         app.post("/api/msg", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
-            String receiver = body.get("receiver");
-            String content = body.get("content");
-            if (receiver == null || content == null) {
-                ctx.status(400).result("Missing receiver or content");
-                return;
-            }
+            String receiver = body.get("receiver"), content = body.get("content");
+            if (receiver == null || content == null) { ctx.status(400).result("Missing receiver or content"); return; }
             boolean sent = peerClient.sendDirectMessage(peerManager.getLocalUsername(), receiver, content);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("sent", String.valueOf(sent))));
-        });
-
-        app.post("/api/register", ctx -> {
-            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
-            String username = body.get("username") != null ? body.get("username").toString().trim() : "";
-            String bootstrapHost = body.get("bootstrapHost") != null ? body.get("bootstrapHost").toString().trim() : "";
-            String host = body.get("host") != null ? body.get("host").toString().trim() : "";
-            Number bootstrapPortValue = body.get("bootstrapPort") instanceof Number ? (Number) body.get("bootstrapPort") : null;
-            int bootstrapPort = bootstrapPortValue != null ? bootstrapPortValue.intValue() : peerManager.getBootstrapPort();
-
-            if (username.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing username")));
-                return;
-            }
-            if (bootstrapHost.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing bootstrapHost")));
-                return;
-            }
-            if (host.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing host")));
-                return;
-            }
-
-            boolean registered = peerNode.connectToBootstrap(username, host, bootstrapHost, bootstrapPort);
-            Map<String, Object> response = new HashMap<>();
-            response.put("username", peerManager.getLocalUsername());
-            response.put("registered", registered);
-            response.put("bootstrapHost", peerManager.getBootstrapHost());
-            response.put("bootstrapPort", peerManager.getBootstrapPort());
-            response.put("host", peerManager.getLocalHost());
-            response.put("lastBootstrapError", peerManager.getLastBootstrapError());
-            response.put("peers", peerManager.getOnlinePeers());
-
-            ctx.contentType("application/json");
-            ctx.status(registered ? 200 : 400);
-            ctx.result(gson.toJson(response));
+            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", sent)));
         });
 
         app.post("/api/broadcast", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
             String content = body.get("content");
-            if (content == null) {
-                ctx.status(400).result("Missing content");
+            if (content == null) { ctx.status(400).result("Missing content"); return; }
+            peerClient.sendBroadcast(peerManager.getLocalUsername(), content);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", true)));
+        });
+
+        // ── Register ──
+        app.post("/api/register", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String username = getString(body, "username");
+            String bootstrapHost = getString(body, "bootstrapHost");
+            String host = getString(body, "host");
+            int bootstrapPort = getInt(body, "bootstrapPort", peerManager.getBootstrapPort());
+
+            if (username.isEmpty() || bootstrapHost.isEmpty() || host.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing required fields")));
                 return;
             }
-            peerClient.sendBroadcast(peerManager.getLocalUsername(), content);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("sent", "true")));
+            boolean registered = peerNode.connectToBootstrap(username, host, bootstrapHost, bootstrapPort);
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("username", peerManager.getLocalUsername());
+            resp.put("registered", registered);
+            resp.put("bootstrapHost", peerManager.getBootstrapHost());
+            resp.put("bootstrapPort", peerManager.getBootstrapPort());
+            resp.put("host", peerManager.getLocalHost());
+            resp.put("address", peerManager.getLocalAddress());
+            resp.put("lastBootstrapError", peerManager.getLastBootstrapError());
+            resp.put("peers", peerManager.getOnlinePeers());
+            ctx.contentType("application/json").status(registered ? 200 : 400).result(gson.toJson(resp));
+        });
+
+        // ── Groups — New DHT-lite API ──
+        app.get("/api/group/list", ctx -> {
+            List<Map<String, Object>> groups = new ArrayList<>();
+            for (GroupCache.GroupCacheEntry e : peerManager.getGroupCache().getAllEntries()) {
+                Map<String, Object> g = new HashMap<>();
+                g.put("groupId", e.getGroupId());
+                g.put("groupName", e.getGroupName());
+                g.put("owner", e.getOwner());
+                g.put("members", e.getMembers());
+                g.put("coordinators", e.getCoordinators());
+                g.put("version", e.getLocalVersion());
+                g.put("groupMode", e.getGroupMode());
+                g.put("groupState", e.getGroupState());
+                groups.add(g);
+            }
+            ctx.contentType("application/json").result(gson.toJson(groups));
+        });
+
+        app.get("/api/group/{groupId}", ctx -> {
+            String groupId = ctx.pathParam("groupId");
+            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+            if (entry == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Group not found"))); return; }
+            Map<String, Object> g = new HashMap<>();
+            g.put("groupId", entry.getGroupId());
+            g.put("groupName", entry.getGroupName());
+            g.put("owner", entry.getOwner());
+            g.put("members", entry.getMembers());
+            g.put("coordinators", entry.getCoordinators());
+            g.put("version", entry.getLocalVersion());
+            g.put("groupMode", entry.getGroupMode());
+            g.put("groupState", entry.getGroupState());
+            ctx.contentType("application/json").result(gson.toJson(g));
         });
 
         app.post("/api/group/create", ctx -> {
-            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
-            String groupName = body.get("groupName");
-            if (groupName == null) {
-                ctx.status(400).result("Missing groupName");
-                return;
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupName = getString(body, "groupName");
+            List<String> memberUsernames = body.get("members") instanceof List<?> l
+                    ? l.stream().map(Object::toString).toList() : List.of();
+            String groupMode = getString(body, "groupMode");
+            if (groupMode.isEmpty()) groupMode = "OPEN";
+
+            if (groupName.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupName"))); return; }
+
+            // Resolve member addresses
+            List<String> memberAddresses = new ArrayList<>();
+            memberAddresses.add(peerManager.getLocalAddress());
+            for (String uname : memberUsernames) {
+                PeerInfo peer = peerManager.getPeer(uname);
+                if (peer != null && peer.isOnline()) {
+                    memberAddresses.add(peer.getAddress());
+                }
             }
-            peerManager.createGroup(groupName);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("created", "true")));
+
+            // Create GroupInfo
+            GroupInfo info = GroupInfo.create(groupName, peerManager.getLocalAddress(), memberAddresses);
+            info.setGroupMode(groupMode);
+
+            // Determine coordinators via HRW
+            List<String> coords = HRWHash.topK(info.getMembers(), info.getGroupId(), Constants.COORDINATOR_K);
+
+            // If we are a coordinator — manage locally
+            if (coords.contains(peerManager.getLocalAddress()) && coordinatorManager != null) {
+                coordinatorManager.manageGroup(info);
+            }
+
+            // COORD_INIT to other coordinators
+            for (String coord : coords) {
+                if (!coord.equals(peerManager.getLocalAddress())) {
+                    sendCoordInit(coord, info);
+                }
+            }
+
+            // GROUP_JOINED to all members
+            for (String addr : info.getMembers()) {
+                if (!addr.equals(peerManager.getLocalAddress())) {
+                    sendGroupJoined(addr, info, coords);
+                }
+            }
+
+            // Update local cache
+            peerManager.getGroupCache().updateFromGroupInfo(info);
+            broadcastToWeb("GROUP_JOINED", groupInfoToWsMap(info, coords));
+
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("groupId", info.getGroupId());
+            resp.put("groupName", info.getGroupName());
+            resp.put("members", info.getMembers());
+            resp.put("coordinators", coords);
+            ctx.contentType("application/json").result(gson.toJson(resp));
         });
 
         app.post("/api/group/add", ctx -> {
-            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
-            String groupName = body.get("groupName");
-            String username = body.get("username");
-            if (groupName == null || username == null) {
-                ctx.status(400).result("Missing groupName or username");
-                return;
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupId = getString(body, "groupId");
+            String username = getString(body, "username");
+            if (groupId.isEmpty() || username.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId or username"))); return;
             }
-            peerManager.addToGroup(groupName, username);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("added", "true")));
+            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+            if (entry == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Group not found"))); return; }
+            PeerInfo peer = peerManager.getPeer(username);
+            if (peer == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Peer not found"))); return; }
+
+            Message addMsg = Message.builder()
+                    .type(MessageType.GROUP_ADD.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .requestId(UUID.randomUUID().toString())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(groupId)
+                    .requester(peerManager.getLocalAddress())
+                    .newMember(peer.getAddress())
+                    .build();
+
+            Message response = peerClient.sendToCoordinator(groupId, addMsg);
+            ctx.contentType("application/json").result(gson.toJson(Map.of(
+                    "type", response.getType(),
+                    "members", response.getMembers() != null ? response.getMembers() : List.of())));
+        });
+
+        app.post("/api/group/kick", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupId = getString(body, "groupId");
+            String target = getString(body, "target");
+            if (groupId.isEmpty() || target.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId or target"))); return;
+            }
+            PeerInfo targetPeer = peerManager.getPeer(target);
+            String targetAddr = targetPeer != null ? targetPeer.getAddress() : target;
+
+            Message kickMsg = Message.builder()
+                    .type(MessageType.GROUP_KICK.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(groupId)
+                    .target(targetAddr)
+                    .build();
+            Message response = peerClient.sendToCoordinator(groupId, kickMsg);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
+        });
+
+        app.post("/api/group/leave", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupId = getString(body, "groupId");
+            String newOwner = getString(body, "newOwner");
+            if (groupId.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId"))); return; }
+
+            Message leaveMsg = Message.builder()
+                    .type(MessageType.GROUP_LEAVE.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(groupId)
+                    .newOwner(newOwner.isEmpty() ? null : newOwner)
+                    .build();
+            Message response = peerClient.sendToCoordinator(groupId, leaveMsg);
+            peerManager.getGroupCache().remove(groupId);
+            broadcastToWeb("GROUP_DISBANDED", Map.of("groupId", groupId));
+            ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
+        });
+
+        app.post("/api/group/disband", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupId = getString(body, "groupId");
+            if (groupId.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId"))); return; }
+
+            Message disbandMsg = Message.builder()
+                    .type(MessageType.GROUP_DISBAND.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(groupId)
+                    .build();
+            Message response = peerClient.sendToCoordinator(groupId, disbandMsg);
+            peerManager.getGroupCache().remove(groupId);
+            broadcastToWeb("GROUP_DISBANDED", Map.of("groupId", groupId));
+            ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
         });
 
         app.post("/api/group/msg", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String groupId = getString(body, "groupId");
+            String content = getString(body, "content");
+            if (groupId.isEmpty() || content.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId or content"))); return;
+            }
+            boolean sent = peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupId, content);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", sent)));
+        });
+
+        // ── Legacy group API (for backward compat) ──
+        app.get("/api/groups", ctx -> ctx.contentType("application/json")
+                .result(gson.toJson(peerManager.getAllGroups().values())));
+
+        app.post("/api/group/create-legacy", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
             String groupName = body.get("groupName");
-            String content = body.get("content");
-            if (groupName == null || content == null) {
-                ctx.status(400).result("Missing groupName or content");
-                return;
-            }
-            peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupName, content);
-            ctx.contentType("application/json");
-            ctx.result(gson.toJson(Map.of("sent", "true")));
+            if (groupName == null) { ctx.status(400).result("Missing groupName"); return; }
+            peerManager.createGroup(groupName);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("created", true)));
         });
+    }
+
+    // ─────────────────── Helpers ───────────────────
+
+    private void discoverPeers() {
+        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+            socket.setSoTimeout(3000);
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            Message discover = ProtocolHandler.createDiscover(peerManager.getLocalUsername());
+            out.println(JsonUtil.toJson(discover));
+            out.flush();
+            String line = in.readLine();
+            if (line != null) {
+                Message resp = JsonUtil.fromJson(line.trim());
+                if (resp != null && "PEER_LIST".equals(resp.getType())) {
+                    peerManager.parsePeerList(resp.getContent());
+                }
+            }
+        } catch (Exception e) {
+            logger.warning("Discover failed: " + e.getMessage());
+        }
+    }
+
+    private void sendCoordInit(String address, GroupInfo info) {
+        String[] parts = address.split(":");
+        if (parts.length != 2) return;
+        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+            socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            Message initMsg = Message.builder()
+                    .type(MessageType.COORD_INIT.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(info.getGroupId())
+                    .groupInfo(info)
+                    .build();
+            out.println(JsonUtil.toJson(initMsg));
+        } catch (Exception e) {
+            logger.fine("COORD_INIT to " + address + " failed: " + e.getMessage());
+        }
+    }
+
+    private void sendGroupJoined(String address, GroupInfo info, List<String> coords) {
+        String[] parts = address.split(":");
+        if (parts.length != 2) return;
+        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+            socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            Message joined = Message.builder()
+                    .type(MessageType.GROUP_JOINED.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(info.getGroupId())
+                    .groupName(info.getGroupName())
+                    .members(new ArrayList<>(info.getMembers()))
+                    .coordinators(coords)
+                    .version(info.getVersion())
+                    .groupMode(info.getGroupMode())
+                    .build();
+            out.println(JsonUtil.toJson(joined));
+        } catch (Exception e) {
+            logger.fine("GROUP_JOINED to " + address + " failed: " + e.getMessage());
+        }
+    }
+
+    private Map<String, Object> groupInfoToWsMap(GroupInfo info, List<String> coords) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("groupId", info.getGroupId());
+        map.put("groupName", info.getGroupName());
+        map.put("owner", info.getOwner());
+        map.put("members", info.getMembers());
+        map.put("coordinators", coords);
+        map.put("version", info.getVersion());
+        map.put("groupMode", info.getGroupMode());
+        return map;
+    }
+
+    private String getString(Map<String, Object> body, String key) {
+        Object v = body.get(key);
+        return v != null ? v.toString().trim() : "";
+    }
+
+    private int getInt(Map<String, Object> body, String key, int def) {
+        Object v = body.get(key);
+        if (v instanceof Number n) return n.intValue();
+        if (v != null) try { return Integer.parseInt(v.toString()); } catch (NumberFormatException ignored) {}
+        return def;
     }
 }

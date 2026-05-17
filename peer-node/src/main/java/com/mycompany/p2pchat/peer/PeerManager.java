@@ -3,18 +3,26 @@ package com.mycompany.p2pchat.peer;
 import com.mycompany.p2pchat.database.DatabaseManager;
 import com.mycompany.p2pchat.database.MessageRepository;
 import com.mycompany.p2pchat.model.ChatGroup;
+import static com.mycompany.p2pchat.utils.Constants.HEARTBEAT_RESUME_THRESHOLD;
 import com.mycompany.p2pchat.model.PeerInfo;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.HashMap;
 
 public class PeerManager {
 
     private final Map<String, PeerInfo> knownPeers = new ConcurrentHashMap<>();
-    private final Map<String, ChatGroup> chatGroups = new ConcurrentHashMap<>();
+    private final Map<String, ChatGroup> chatGroups = new ConcurrentHashMap<>();  // legacy, kept for CLI compat
     private final DatabaseManager dbManager;
     private final MessageRepository messageRepository;
+
+    // DHT-lite components
+    private final GroupCache groupCache;
+    private final LamportClock lamportClock;
+    private final RecentPeersCache recentPeersCache;
+    private LazyRepairManager lazyRepairManager;
+
+    // Peer identity
     private String bootstrapHost;
     private int bootstrapPort;
     private String localUsername;
@@ -23,11 +31,21 @@ public class PeerManager {
     private int webPort;
     private volatile boolean registeredToBootstrap;
     private volatile String lastBootstrapError;
+    private volatile long lastHeartbeatSuccess = 0;
 
     public PeerManager(String dbName) {
         this.dbManager = new DatabaseManager(dbName);
         this.dbManager.init();
         this.messageRepository = new MessageRepository(dbManager);
+        this.groupCache = new GroupCache();
+        this.lamportClock = new LamportClock();
+        this.recentPeersCache = new RecentPeersCache(dbManager);
+    }
+
+    // ==================== Peer State ====================
+
+    public String getLocalAddress() {
+        return localHost + ":" + localPort;
     }
 
     public void addKnownPeer(PeerInfo peer) {
@@ -44,9 +62,7 @@ public class PeerManager {
 
     public void removeKnownPeer(String username) {
         PeerInfo peer = knownPeers.get(username);
-        if (peer != null) {
-            peer.setOnline(false);
-        }
+        if (peer != null) peer.setOnline(false);
     }
 
     public PeerInfo getPeer(String username) {
@@ -54,9 +70,7 @@ public class PeerManager {
     }
 
     public List<PeerInfo> getOnlinePeers() {
-        return knownPeers.values().stream()
-                .filter(PeerInfo::isOnline)
-                .toList();
+        return knownPeers.values().stream().filter(PeerInfo::isOnline).toList();
     }
 
     public List<PeerInfo> getAllKnownPeers() {
@@ -66,45 +80,30 @@ public class PeerManager {
     public void parsePeerList(String peerListStr) {
         knownPeers.values().forEach(peer -> peer.setOnline(false));
         if (peerListStr == null || peerListStr.isEmpty()) return;
-        String[] entries = peerListStr.split(",");
-        for (String entry : entries) {
+        for (String entry : peerListStr.split(",")) {
             if (entry.trim().isEmpty()) continue;
             String[] parts = entry.split("@");
             if (parts.length != 2) continue;
             String username = parts[0].trim();
             String[] addr = parts[1].split(":");
             if (addr.length != 2) continue;
-            String host = addr[0].trim();
-            int port = Integer.parseInt(addr[1].trim());
+            int port;
+            try { port = Integer.parseInt(addr[1].trim()); } catch (NumberFormatException e) { continue; }
             if (!username.equals(localUsername)) {
-                PeerInfo peer = new PeerInfo(username, host, port);
-                addKnownPeer(peer);
+                addKnownPeer(new PeerInfo(username, addr[0].trim(), port));
             }
         }
     }
 
+    // ==================== Legacy Group Support (CLI) ====================
+
     public void createGroup(String groupName) {
-        if (chatGroups.containsKey(groupName)) {
-            System.out.println("[ERROR] Group already exists: " + groupName);
-            return;
-        }
-        ChatGroup group = new ChatGroup(groupName, localUsername);
-        chatGroups.put(groupName, group);
-        System.out.println("[GROUP] Created group: " + groupName);
+        chatGroups.computeIfAbsent(groupName, n -> new ChatGroup(n, localUsername));
     }
 
     public void addToGroup(String groupName, String username) {
-        ChatGroup group = chatGroups.get(groupName);
-        if (group == null) {
-            System.out.println("[ERROR] Group not found: " + groupName);
-            return;
-        }
-        if (!knownPeers.containsKey(username)) {
-            System.out.println("[ERROR] Peer not found: " + username);
-            return;
-        }
-        group.addMember(username);
-        System.out.println("[GROUP] Added " + username + " to " + groupName);
+        ChatGroup g = chatGroups.get(groupName);
+        if (g != null) g.addMember(username);
     }
 
     public ChatGroup getChatGroup(String groupName) {
@@ -116,48 +115,26 @@ public class PeerManager {
     }
 
     public void listGroups() {
-        if (chatGroups.isEmpty()) {
-            System.out.println("No groups.");
-            return;
-        }
-        for (ChatGroup group : chatGroups.values()) {
-            System.out.println("  " + group.getGroupName() + ": " + group.getMembers());
-        }
+        chatGroups.forEach((name, g) -> System.out.println("  " + name + ": " + g.getMembers()));
     }
 
-    public MessageRepository getMessageRepository() {
-        return messageRepository;
-    }
+    // ==================== Heartbeat tracking ====================
 
-    public DatabaseManager getDbManager() {
-        return dbManager;
-    }
-
-    public String getBootstrapHost() { return bootstrapHost; }
-    public void setBootstrapHost(String bootstrapHost) { this.bootstrapHost = bootstrapHost; }
-
-    public int getBootstrapPort() { return bootstrapPort; }
-    public void setBootstrapPort(int bootstrapPort) { this.bootstrapPort = bootstrapPort; }
-
-    public String getLocalUsername() { return localUsername; }
-    public void setLocalUsername(String localUsername) { this.localUsername = localUsername; }
-
-    public String getLocalHost() { return localHost; }
-    public void setLocalHost(String localHost) { this.localHost = localHost; }
-
-    public int getLocalPort() { return localPort; }
-    public void setLocalPort(int localPort) { this.localPort = localPort; }
-
-    public int getWebPort() { return webPort; }
-    public void setWebPort(int webPort) { this.webPort = webPort; }
-
-    public boolean isRegisteredToBootstrap() { return registeredToBootstrap; }
-
-    public String getLastBootstrapError() { return lastBootstrapError; }
-
-    public void markBootstrapRegistrationSuccess() {
+    public void markHeartbeatSuccess() {
+        boolean wasDown = !registeredToBootstrap ||
+                (System.currentTimeMillis() - lastHeartbeatSuccess > HEARTBEAT_RESUME_THRESHOLD);
         this.registeredToBootstrap = true;
         this.lastBootstrapError = null;
+        long prev = lastHeartbeatSuccess;
+        this.lastHeartbeatSuccess = System.currentTimeMillis();
+        // Trigger 4: heartbeat resumed after >10s outage
+        if (wasDown && prev > 0 && lazyRepairManager != null) {
+            lazyRepairManager.repairOnHeartbeatResumed();
+        }
+    }
+
+    public void markBootstrapRegistrationSuccess() {
+        markHeartbeatSuccess();
     }
 
     public void markBootstrapRegistrationFailure(String error) {
@@ -169,7 +146,38 @@ public class PeerManager {
         knownPeers.clear();
     }
 
-    public void shutdown() {
-        dbManager.close();
-    }
+    // ==================== Getters/Setters ====================
+
+    public GroupCache getGroupCache() { return groupCache; }
+    public LamportClock getLamportClock() { return lamportClock; }
+    public RecentPeersCache getRecentPeersCache() { return recentPeersCache; }
+
+    public LazyRepairManager getLazyRepairManager() { return lazyRepairManager; }
+    public void setLazyRepairManager(LazyRepairManager m) { this.lazyRepairManager = m; }
+
+    public MessageRepository getMessageRepository() { return messageRepository; }
+    public DatabaseManager getDbManager() { return dbManager; }
+
+    public String getBootstrapHost() { return bootstrapHost; }
+    public void setBootstrapHost(String h) { this.bootstrapHost = h; }
+
+    public int getBootstrapPort() { return bootstrapPort; }
+    public void setBootstrapPort(int p) { this.bootstrapPort = p; }
+
+    public String getLocalUsername() { return localUsername; }
+    public void setLocalUsername(String u) { this.localUsername = u; }
+
+    public String getLocalHost() { return localHost; }
+    public void setLocalHost(String h) { this.localHost = h; }
+
+    public int getLocalPort() { return localPort; }
+    public void setLocalPort(int p) { this.localPort = p; }
+
+    public int getWebPort() { return webPort; }
+    public void setWebPort(int p) { this.webPort = p; }
+
+    public boolean isRegisteredToBootstrap() { return registeredToBootstrap; }
+    public String getLastBootstrapError() { return lastBootstrapError; }
+
+    public void shutdown() { dbManager.close(); }
 }

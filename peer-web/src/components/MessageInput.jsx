@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 
-export default function MessageInput({ onSend, onBroadcast, activeChat }) {
+export default function MessageInput({ onSend, disabled, activeChat }) {
   const [text, setText] = useState('');
+  const inputRef = useRef(null);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() || disabled) return;
     onSend(text.trim());
     setText('');
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (e) => {
@@ -19,17 +21,29 @@ export default function MessageInput({ onSend, onBroadcast, activeChat }) {
 
   if (!activeChat) return null;
 
+  const placeholder = disabled
+    ? 'Bạn đã bị xóa khỏi nhóm này'
+    : activeChat.type === 'broadcast'
+      ? 'Broadcast to all peers...'
+      : activeChat.type === 'group'
+        ? `Message # ${activeChat.name}...`
+        : `Message @ ${activeChat.name}...`;
+
   return (
     <form className="message-input" onSubmit={handleSubmit}>
       <input
+        ref={inputRef}
         type="text"
-        placeholder={`Message ${activeChat.type === 'group' ? '#' : ''}${activeChat.name}...`}
+        placeholder={placeholder}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={e => setText(e.target.value)}
         onKeyDown={handleKeyDown}
+        disabled={disabled}
         autoFocus
       />
-      <button type="submit">Send</button>
+      <button type="submit" disabled={disabled || !text.trim()} className="send-btn">
+        Send ↵
+      </button>
     </form>
   );
 }

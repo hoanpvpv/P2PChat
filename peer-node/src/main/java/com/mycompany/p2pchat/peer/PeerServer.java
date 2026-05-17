@@ -1,22 +1,20 @@
 package com.mycompany.p2pchat.peer;
 
+import com.mycompany.p2pchat.model.GroupInfo;
 import com.mycompany.p2pchat.model.Message;
 import com.mycompany.p2pchat.model.PeerInfo;
 import com.mycompany.p2pchat.protocol.JsonUtil;
 import com.mycompany.p2pchat.protocol.MessageType;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
+import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
+import com.mycompany.p2pchat.utils.TimeUtil;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.Logger;
 
 public class PeerServer {
@@ -28,31 +26,35 @@ public class PeerServer {
     private final ExecutorService threadPool = Executors.newCachedThreadPool();
     private volatile boolean running = false;
     private WebServer webServer;
+    private CoordinatorManager coordinatorManager;
+
+    // Lamport buffer: groupId → scheduled messages
+    private final Map<String, List<Message>> lamportBuffers = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService bufferFlusher = Executors.newSingleThreadScheduledExecutor();
+
+    // Grace window scheduler for LEAVING state
+    private final ScheduledExecutorService graceScheduler = Executors.newSingleThreadScheduledExecutor();
 
     public PeerServer(int port, PeerManager peerManager) {
         this.port = port;
         this.peerManager = peerManager;
     }
 
-    public void setWebServer(WebServer webServer) {
-        this.webServer = webServer;
-    }
+    public void setWebServer(WebServer webServer) { this.webServer = webServer; }
+    public void setCoordinatorManager(CoordinatorManager cm) { this.coordinatorManager = cm; }
 
     public void start() {
         running = true;
         try {
             serverSocket = new ServerSocket(port);
-            logger.info("PeerServer started on port " + port);
-
+            logger.info("PeerServer listening on port " + port);
             threadPool.execute(() -> {
                 while (running) {
                     try {
-                        Socket clientSocket = serverSocket.accept();
-                        threadPool.execute(() -> handleIncomingConnection(clientSocket));
+                        Socket client = serverSocket.accept();
+                        threadPool.execute(() -> handleConnection(client));
                     } catch (IOException e) {
-                        if (running) {
-                            logger.severe("Error accepting peer connection: " + e.getMessage());
-                        }
+                        if (running) logger.fine("Accept error: " + e.getMessage());
                     }
                 }
             });
@@ -61,125 +63,395 @@ public class PeerServer {
         }
     }
 
-    private void handleIncomingConnection(Socket socket) {
+    private void handleConnection(Socket socket) {
         try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
             String line;
             while ((line = in.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
-                Message message = JsonUtil.fromJson(line.trim());
-                processMessage(message, socket);
+                Message msg = JsonUtil.fromJson(line.trim());
+                if (msg != null) processMessage(msg, socket);
             }
         } catch (IOException e) {
-            logger.fine("Peer connection closed: " + socket.getRemoteSocketAddress());
+            logger.fine("Connection closed: " + socket.getRemoteSocketAddress());
         } finally {
             try { socket.close(); } catch (IOException ignored) {}
         }
     }
 
-    private void processMessage(Message message, Socket socket) {
-        String type = message.getType();
-        logger.info("Received [" + type + "] from " + message.getSender());
+    private void processMessage(Message msg, Socket socket) {
+        String type = msg.getType();
+        logger.fine("Received [" + type + "] from " + msg.getSender());
 
         try {
             switch (MessageType.valueOf(type)) {
-                case DIRECT_MESSAGE:
-                    receiveDirectMessage(message);
-                    sendAck(message, socket);
-                    break;
-                case GROUP_MESSAGE:
-                    receiveGroupMessage(message);
-                    sendAck(message, socket);
-                    break;
-                case BROADCAST:
-                    receiveBroadcast(message);
-                    sendAck(message, socket);
-                    break;
-                case PEER_JOIN:
-                    handlePeerJoin(message);
-                    break;
-                case PEER_LEAVE:
-                    handlePeerLeave(message);
-                    break;
-                case ACK:
-                    logger.fine("Received ACK for message: " + message.getContent());
-                    break;
-                case OFFLINE_MESSAGE:
-                    receiveOfflineMessage(message);
-                    break;
-                default:
-                    logger.warning("Unhandled message type: " + type);
+                // ── P2P messaging ──
+                case DIRECT_MESSAGE  -> { handleDirectMessage(msg); sendAck(msg, socket); }
+                case GROUP_MESSAGE   -> handleGroupMessage(msg, socket);
+                case BROADCAST       -> { handleBroadcast(msg); sendAck(msg, socket); }
+                case OFFLINE_MESSAGE -> { handleOfflineMessage(msg); }
+
+                // ── Peer events from Bootstrap ──
+                case PEER_JOIN  -> handlePeerJoin(msg);
+                case PEER_LEAVE -> handlePeerLeave(msg);
+                case ACK        -> logger.fine("ACK for: " + msg.getContent());
+
+                // ── Control Plane: Coordinator protocol ──
+                case COORD_INIT      -> handleCoordInit(msg, socket);
+                case COORD_GOSSIP    -> handleCoordGossip(msg);
+                case COORD_RESIGN    -> handleCoordResign(msg);
+                case GROUP_ADD       -> handleGroupAdd(msg, socket);
+                case GROUP_KICK      -> handleGroupKick(msg, socket);
+                case GROUP_LEAVE     -> handleGroupLeave(msg, socket);
+                case GROUP_DISBAND   -> handleGroupDisband(msg, socket);
+                case GROUP_JOINED    -> handleGroupJoined(msg);
+                case GROUP_UPDATED   -> handleGroupUpdated(msg);
+                case GROUP_KICKED    -> handleGroupKicked(msg);
+                case GROUP_DISBANDED -> handleGroupDisbanded(msg);
+
+                // ── Repair Plane ──
+                case GROUP_RESYNC_REQ -> handleResyncReq(msg, socket);
+                case CACHE_STALE      -> handleCacheStale(msg);
+                case GROUP_GET        -> handleGroupGet(msg, socket);
+
+                // ── Peer lookup relay ──
+                case PEER_LOOKUP_REQ  -> handlePeerLookupReq(msg, socket);
+
+                default -> logger.fine("Unhandled message type: " + type);
             }
+        } catch (IllegalArgumentException e) {
+            logger.warning("Unknown message type: " + type);
         } catch (Exception e) {
-            logger.severe("Error processing message: " + e.getMessage());
+            logger.severe("Error processing message [" + type + "]: " + e.getMessage());
         }
     }
 
-    private void receiveDirectMessage(Message message) {
-        String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(message.getTimestamp());
-        System.out.println("\n[" + time + "] " + message.getSender() + " -> you: " + message.getContent());
-        System.out.print("> ");
-        peerManager.getMessageRepository().saveMessage(message);
-        if (webServer != null) {
-            webServer.broadcastToWeb("DIRECT_MESSAGE", messageToMap(message));
-        }
+    // ─────────────────────── P2P Messaging ───────────────────────
+
+    private void handleDirectMessage(Message msg) {
+        System.out.printf("%n[%s] %s -> you: %s%n> ",
+                TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
+        peerManager.getMessageRepository().saveMessage(msg);
+        // Update recent peers cache
+        var peer = peerManager.getPeer(msg.getSender());
+        if (peer != null) peerManager.getRecentPeersCache().upsert(msg.getSender(), peer.getAddress());
+        broadcastWs("DIRECT_MESSAGE", messageToMap(msg));
     }
 
-    private void receiveGroupMessage(Message message) {
-        String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(message.getTimestamp());
-        System.out.println("\n[" + time + "] [" + message.getGroupName() + "] " + message.getSender() + ": " + message.getContent());
-        System.out.print("> ");
-        peerManager.getMessageRepository().saveMessage(message);
-        if (webServer != null) {
-            webServer.broadcastToWeb("GROUP_MESSAGE", messageToMap(message));
+    private void handleGroupMessage(Message msg, Socket socket) {
+        String groupId = msg.getGroupId();
+        GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+
+        // Update Lamport clock
+        peerManager.getLamportClock().receive(msg.getLamportClock());
+
+        // Version mismatch check
+        if (entry != null && msg.getCacheVersion() > 0 && msg.getCacheVersion() < entry.getLocalVersion()) {
+            // Sender has older cache — send CACHE_STALE back
+            sendCacheStale(msg.getSender(), groupId, entry.getLocalVersion(), socket);
         }
+
+        // If in LEAVING state — store but don't ACK
+        if (entry != null && "LEAVING".equals(entry.getGroupState())) {
+            peerManager.getMessageRepository().saveMessage(msg);
+            broadcastWs("GROUP_MESSAGE", messageToMap(msg));
+            return; // no ACK
+        }
+
+        // Buffer window: hold 200ms, sort by lamport clock before pushing to UI
+        lamportBuffers.computeIfAbsent(groupId, k -> Collections.synchronizedList(new ArrayList<>())).add(msg);
+        bufferFlusher.schedule(() -> flushLamportBuffer(groupId), Constants.LAMPORT_BUFFER_MS, TimeUnit.MILLISECONDS);
+
+        sendAck(msg, socket);
     }
 
-    private void receiveBroadcast(Message message) {
-        String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(message.getTimestamp());
-        System.out.println("\n[" + time + "] [BROADCAST] " + message.getSender() + ": " + message.getContent());
-        System.out.print("> ");
-        peerManager.getMessageRepository().saveMessage(message);
-        if (webServer != null) {
-            webServer.broadcastToWeb("BROADCAST", messageToMap(message));
-        }
-    }
-
-    private void receiveOfflineMessage(Message message) {
-        String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(message.getTimestamp());
-        System.out.println("\n[" + time + "] [OFFLINE-MSG] " + message.getSender() + ": " + message.getContent());
-        System.out.print("> ");
-        peerManager.getMessageRepository().saveMessage(message);
-        if (webServer != null) {
-            webServer.broadcastToWeb("OFFLINE_MESSAGE", messageToMap(message));
-        }
-    }
-
-    private void handlePeerJoin(Message message) {
-        String[] parts = message.getContent().split(":");
-        if (parts.length == 2) {
-            PeerInfo peer = new PeerInfo(message.getSender(), parts[0], Integer.parseInt(parts[1]));
-            peerManager.addKnownPeer(peer);
-            System.out.println("\n[SYSTEM] " + message.getSender() + " joined the network.");
-            System.out.print("> ");
-            if (webServer != null) {
-                Map<String, Object> data = new HashMap<>();
-                data.put("username", message.getSender());
-                data.put("host", parts[0]);
-                data.put("port", Integer.parseInt(parts[1]));
-                webServer.broadcastToWeb("PEER_JOIN", data);
+    private void flushLamportBuffer(String groupId) {
+        List<Message> buffer = lamportBuffers.remove(groupId);
+        if (buffer == null) return;
+        synchronized (buffer) {
+            buffer.sort(Comparator.comparingLong(Message::getLamportClock)
+                        .thenComparing(m -> m.getSender() != null ? m.getSender() : ""));
+            for (Message m : buffer) {
+                peerManager.getMessageRepository().saveMessage(m);
+                System.out.printf("%n[%s] [%s] %s: %s%n> ",
+                        TimeUtil.formatTimestamp(m.getTimestamp()),
+                        m.getGroupName() != null ? m.getGroupName() : groupId,
+                        m.getSender(), m.getContent());
+                broadcastWs("GROUP_MESSAGE", messageToMap(m));
             }
         }
     }
 
-    private void handlePeerLeave(Message message) {
-        peerManager.removeKnownPeer(message.getSender());
-        System.out.println("\n[SYSTEM] " + message.getSender() + " left the network.");
-        System.out.print("> ");
-        if (webServer != null) {
+    private void handleBroadcast(Message msg) {
+        System.out.printf("%n[%s] [BROADCAST] %s: %s%n> ",
+                TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
+        peerManager.getMessageRepository().saveMessage(msg);
+        broadcastWs("BROADCAST", messageToMap(msg));
+    }
+
+    private void handleOfflineMessage(Message msg) {
+        System.out.printf("%n[%s] [OFFLINE] %s: %s%n> ",
+                TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
+        peerManager.getMessageRepository().saveMessage(msg);
+        broadcastWs("OFFLINE_MESSAGE", messageToMap(msg));
+    }
+
+    // ─────────────────────── Peer Events ───────────────────────
+
+    private void handlePeerJoin(Message msg) {
+        String[] parts = msg.getContent().split(":");
+        if (parts.length == 2) {
+            PeerInfo peer = new PeerInfo(msg.getSender(), parts[0], Integer.parseInt(parts[1]));
+            peerManager.addKnownPeer(peer);
+            System.out.printf("%n[SYSTEM] %s joined the network.%n> ", msg.getSender());
             Map<String, Object> data = new HashMap<>();
-            data.put("username", message.getSender());
-            webServer.broadcastToWeb("PEER_LEAVE", data);
+            data.put("username", msg.getSender());
+            data.put("host", parts[0]);
+            data.put("port", Integer.parseInt(parts[1]));
+            broadcastWs("PEER_JOIN", data);
         }
+    }
+
+    private void handlePeerLeave(Message msg) {
+        peerManager.removeKnownPeer(msg.getSender());
+        System.out.printf("%n[SYSTEM] %s left the network.%n> ", msg.getSender());
+        broadcastWs("PEER_LEAVE", Map.of("username", msg.getSender()));
+    }
+
+    // ─────────────────────── Control Plane ───────────────────────
+
+    private void handleCoordInit(Message msg, Socket socket) {
+        GroupInfo info = msg.getGroupInfo();
+        if (info == null) return;
+        // This peer is now a coordinator for this group
+        if (coordinatorManager != null) {
+            coordinatorManager.manageGroup(info);
+        }
+        peerManager.getGroupCache().updateFromGroupInfo(info);
+        sendRawAck(socket, msg.getMessageId(), "COORD_INIT_ACK");
+        logger.info("Became coordinator for group: " + info.getGroupId());
+        broadcastWs("GROUP_UPDATED", groupInfoToMap(info, "COORD_CHANGE", null));
+    }
+
+    private void handleCoordGossip(Message msg) {
+        if (coordinatorManager != null) {
+            coordinatorManager.handleCoordGossip(msg);
+        }
+        // Also update local cache
+        GroupInfo remoteInfo = msg.getGroupInfo();
+        if (remoteInfo != null) {
+            GroupCache.GroupCacheEntry local = peerManager.getGroupCache().get(remoteInfo.getGroupId());
+            if (local == null || remoteInfo.getVersion() > local.getLocalVersion()) {
+                peerManager.getGroupCache().updateFromGroupInfo(remoteInfo);
+            }
+        }
+    }
+
+    private void handleCoordResign(Message msg) {
+        String groupId = msg.getGroupId();
+        if (coordinatorManager != null && coordinatorManager.isManaging(groupId)) {
+            coordinatorManager.unmanageGroup(groupId);
+            logger.info("Coordinator resigned for group: " + groupId);
+        }
+    }
+
+    private void handleGroupAdd(Message msg, Socket socket) {
+        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+            return;
+        }
+        Message response = coordinatorManager.handleGroupAdd(msg);
+        sendResponse(socket, response);
+        if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
+            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+        }
+    }
+
+    private void handleGroupKick(Message msg, Socket socket) {
+        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+            return;
+        }
+        Message response = coordinatorManager.handleGroupKick(msg);
+        sendResponse(socket, response);
+        if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
+            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+        }
+    }
+
+    private void handleGroupLeave(Message msg, Socket socket) {
+        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+            return;
+        }
+        Message response = coordinatorManager.handleGroupLeave(msg);
+        sendResponse(socket, response);
+        if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
+            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+        }
+    }
+
+    private void handleGroupDisband(Message msg, Socket socket) {
+        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+            return;
+        }
+        coordinatorManager.handleGroupDisband(msg);
+        broadcastWs("GROUP_DISBANDED", Map.of("groupId", msg.getGroupId()));
+    }
+
+    private void handleGroupJoined(Message msg) {
+        GroupInfo info = new GroupInfo();
+        info.setGroupId(msg.getGroupId());
+        info.setGroupName(msg.getGroupName());
+        info.setMembers(msg.getMembers() != null ? msg.getMembers() : new ArrayList<>());
+        info.setOwner(msg.getMembers() != null && !msg.getMembers().isEmpty() ? msg.getMembers().get(0) : "");
+        info.setVersion(msg.getVersion());
+        info.setGroupMode(msg.getGroupMode() != null ? msg.getGroupMode() : "OPEN");
+        peerManager.getGroupCache().updateFromGroupInfo(info);
+        logger.info("Joined group: " + msg.getGroupId() + " (" + msg.getGroupName() + ")");
+        broadcastWs("GROUP_JOINED", groupInfoToMap(info, null, null));
+    }
+
+    private void handleGroupUpdated(Message msg) {
+        GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(msg.getGroupId());
+        if (entry == null) return;
+        if (msg.getMembers() != null) entry.setMembers(new ArrayList<>(msg.getMembers()));
+        if (msg.getCoordinators() != null) entry.setCoordinators(new ArrayList<>(msg.getCoordinators()));
+        if (msg.getVersion() > 0) entry.setLocalVersion(msg.getVersion());
+        if (msg.getGroupMode() != null) entry.setGroupMode(msg.getGroupMode());
+        entry.setLastUpdated(System.currentTimeMillis());
+        broadcastWs("GROUP_UPDATED", messageToMapFull(msg));
+    }
+
+    private void handleGroupKicked(Message msg) {
+        String groupId = msg.getGroupId();
+        // Grace window: state = LEAVING, continue receiving for 3s
+        peerManager.getGroupCache().setState(groupId, "LEAVING");
+        broadcastWs("GROUP_KICKED", Map.of(
+                "groupId", groupId != null ? groupId : "",
+                "message", "Bạn đã bị xóa khỏi nhóm này"));
+        // After grace window, remove from cache
+        graceScheduler.schedule(() -> {
+            peerManager.getGroupCache().remove(groupId);
+            broadcastWs("GROUP_REMOVED", Map.of("groupId", groupId != null ? groupId : ""));
+        }, Constants.KICK_GRACE_WINDOW_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void handleGroupDisbanded(Message msg) {
+        String groupId = msg.getGroupId();
+        peerManager.getGroupCache().remove(groupId);
+        broadcastWs("GROUP_DISBANDED", Map.of("groupId", groupId != null ? groupId : ""));
+    }
+
+    // ─────────────────────── Repair Plane ───────────────────────
+
+    private void handleResyncReq(Message msg, Socket socket) {
+        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+            return;
+        }
+        Message response = coordinatorManager.handleResyncReq(msg);
+        sendResponse(socket, response);
+    }
+
+    private void handleCacheStale(Message msg) {
+        String groupId = msg.getGroupId();
+        logger.info("CACHE_STALE received for " + groupId + " — triggering repair");
+        LazyRepairManager repair = peerManager.getLazyRepairManager();
+        if (repair != null) {
+            threadPool.execute(() -> repair.repair(groupId));
+        }
+    }
+
+    private void handleGroupGet(Message msg, Socket socket) {
+        // Not implemented in full — coordinator returns all groups for requesting peer
+        sendError(socket, "GROUP_GET not yet fully implemented");
+    }
+
+    private void handlePeerLookupReq(Message msg, Socket socket) {
+        String targetUsername = msg.getContent();
+        // Check our known peers list
+        PeerInfo peer = peerManager.getPeer(targetUsername);
+        if (peer != null && peer.isOnline()) {
+            Message resp = Message.builder()
+                    .type(MessageType.PEER_LOOKUP_RESP.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .content(peer.getAddress())
+                    .build();
+            sendResponse(socket, resp);
+        } else {
+            sendError(socket, "Peer not found: " + targetUsername);
+        }
+    }
+
+    private void sendCacheStale(String senderAddress, String groupId, long currentVersion, Socket socket) {
+        try {
+            Message stale = Message.builder()
+                    .type(MessageType.CACHE_STALE.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalAddress())
+                    .groupId(groupId)
+                    .cacheVersion(currentVersion)
+                    .build();
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            out.println(JsonUtil.toJson(stale));
+        } catch (IOException e) {
+            logger.fine("Failed to send CACHE_STALE: " + e.getMessage());
+        }
+    }
+
+    // ─────────────────────── Helpers ───────────────────────
+
+    private void sendAck(Message original, Socket socket) {
+        try {
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            Message ack = ProtocolHandler.createAck(original.getMessageId(), peerManager.getLocalUsername());
+            out.println(JsonUtil.toJson(ack));
+        } catch (IOException e) {
+            logger.fine("Failed to send ACK: " + e.getMessage());
+        }
+    }
+
+    private void sendRawAck(Socket socket, String originalId, String ackType) {
+        try {
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            Message ack = Message.builder()
+                    .type(ackType)
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .content(originalId)
+                    .build();
+            out.println(JsonUtil.toJson(ack));
+        } catch (IOException e) {
+            logger.fine("Failed to send " + ackType);
+        }
+    }
+
+    private void sendResponse(Socket socket, Message response) {
+        try {
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            out.println(JsonUtil.toJson(response));
+        } catch (IOException e) {
+            logger.fine("Failed to send response: " + e.getMessage());
+        }
+    }
+
+    private void sendError(Socket socket, String error) {
+        try {
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            Message err = Message.builder()
+                    .type(MessageType.ERROR.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .content(error).build();
+            out.println(JsonUtil.toJson(err));
+        } catch (IOException e) {
+            logger.fine("Failed to send error response");
+        }
+    }
+
+    private void broadcastWs(String type, Object data) {
+        if (webServer != null) webServer.broadcastToWeb(type, data);
     }
 
     private Map<String, Object> messageToMap(Message msg) {
@@ -188,21 +460,37 @@ public class PeerServer {
         map.put("sender", msg.getSender());
         map.put("receiver", msg.getReceiver());
         map.put("groupName", msg.getGroupName());
+        map.put("groupId", msg.getGroupId());
         map.put("content", msg.getContent());
         map.put("type", msg.getType());
         map.put("timestamp", msg.getTimestamp());
+        map.put("lamportClock", msg.getLamportClock());
         return map;
     }
 
-    private void sendAck(Message original, Socket socket) {
-        try {
-            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Message ack = ProtocolHandler.createAck(original.getMessageId(), peerManager.getLocalUsername());
-            out.println(JsonUtil.toJson(ack));
-            out.flush();
-        } catch (IOException e) {
-            logger.warning("Failed to send ACK: " + e.getMessage());
-        }
+    private Map<String, Object> messageToMapFull(Message msg) {
+        Map<String, Object> map = messageToMap(msg);
+        map.put("members", msg.getMembers());
+        map.put("coordinators", msg.getCoordinators());
+        map.put("version", msg.getVersion());
+        map.put("changeType", msg.getChangeType());
+        map.put("affected", msg.getAffected());
+        map.put("groupMode", msg.getGroupMode());
+        return map;
+    }
+
+    private Map<String, Object> groupInfoToMap(GroupInfo info, String changeType, String affected) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("groupId", info.getGroupId());
+        map.put("groupName", info.getGroupName());
+        map.put("owner", info.getOwner());
+        map.put("members", info.getMembers());
+        map.put("coordinators", HRWHash.topK(info.getMembers(), info.getGroupId(), Constants.COORDINATOR_K));
+        map.put("version", info.getVersion());
+        map.put("groupMode", info.getGroupMode());
+        if (changeType != null) map.put("changeType", changeType);
+        if (affected != null) map.put("affected", affected);
+        return map;
     }
 
     public void stop() {
@@ -210,6 +498,8 @@ public class PeerServer {
         try {
             if (serverSocket != null) serverSocket.close();
             threadPool.shutdown();
+            bufferFlusher.shutdown();
+            graceScheduler.shutdown();
         } catch (IOException e) {
             logger.severe("Error stopping PeerServer: " + e.getMessage());
         }
