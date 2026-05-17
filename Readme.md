@@ -315,6 +315,9 @@ Kết quả: thư mục `peer-web/build/` chứa static files.
 cd /path/to/P2PChat
 rm -rf peer-node/src/main/resources/static
 cp -r peer-web/build peer-node/src/main/resources/static
+
+Remove-Item -Recurse -Force peer-node/src/main/resources/static
+Copy-Item -Recurse peer-web/build peer-node/src/main/resources/static
 ```
 
 #### Bước 4: Build Bootstrap Server
@@ -344,25 +347,27 @@ Kết quả: `peer-node/target/peer-node.jar`
 #### Bước 6: Khởi động Bootstrap Server
 
 ```bash
-cd /path/to/P2PChat
-java -jar bootstrap-server/target/bootstrap-server.jar
+cd /path/to/P2PChat/bootstrap-server
+java -jar target/bootstrap-server.jar
 ```
 
-Bootstrap server chạy mặc định trên port `9000`, và dashboard web admin chạy trên `http://localhost:9001`. Giữ terminal này mở.
+Bootstrap server chạy mặc định trên port `8080`, và dashboard web admin chạy trên `http://localhost:8081`. Giữ terminal này mở.
 
 #### Bước 7: Khởi động Peer Node
 
 Mở terminal mới cho mỗi peer:
 
 ```bash
+cd /path/to/P2PChat/peer-node
+
 # Terminal 2 — Peer A (web port 3000, peer port 5001 khi khởi tạo trên Web UI)
-java -jar peer-node/target/peer-node.jar
+java -jar target/peer-node.jar
 
 # Terminal 3 — Peer B (web port 3001, peer port 5002 khi khởi tạo trên Web UI)
-java -jar peer-node/target/peer-node.jar --web 3001
+java -jar target/peer-node.jar --web 3001
 
 # Terminal 4 — Peer C (web port 3002, peer port 5003 khi khởi tạo trên Web UI)
-java -jar peer-node/target/peer-node.jar --web 3002
+java -jar target/peer-node.jar --web 3002
 ```
 
 > **Lưu ý:** Tham số `--web` chỉ định **web port** (giao diện HTTP/WebSocket). **Peer port** (TCP P2P giữa các peer) được nhập thủ công qua Web UI khi mỗi peer khởi tạo. Mỗi peer cần một peer port khác nhau (5001, 5002, 5003...) để tránh xung đột.
@@ -372,7 +377,7 @@ Sau khi peer chạy, mở Web UI của peer và nhập:
 - `host`
 - `peer port` (TCP port P2P, ví dụ: 5001, 5002...)
 - `bootstrap host` (mặc định `localhost`)
-- `bootstrap port` (mặc định `9000`)
+- `bootstrap port` (mặc định `8080`)
 
 Rồi bấm `Connect Peer` để đăng ký vào mạng.
 
@@ -520,7 +525,7 @@ powershell -ExecutionPolicy Bypass -File .\churn-test.ps1 `
 
 #### Quan sát kết quả ở đâu
 
-- Dashboard bootstrap: `http://localhost:9001`
+- Dashboard bootstrap: `http://localhost:8081`
 - Bảng `Known Peers`
 - Bảng `Realtime Event Log`
 - Log file trong thư mục `churn-logs`
