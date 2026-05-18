@@ -134,6 +134,16 @@ public class PeerClient {
 
     // ==================== Broadcast ====================
 
+    public void sendSignal(String host, int port, String type, String groupId, String dummy) {
+        Message message = Message.builder()
+                .type(type)
+                .sender(peerManager.getLocalUsername())
+                .groupId(groupId != null && !groupId.isEmpty() ? groupId : null)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendSingle(message, host, port);
+    }
+
     public void sendBroadcast(String sender, String content) {
         Message message = ProtocolHandler.createBroadcast(sender, content);
         peerManager.getMessageRepository().saveMessage(message);

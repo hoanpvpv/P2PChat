@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  fetchInfo, fetchPeers, fetchGroups, fetchHistory, fetchGroupHistory,
+  fetchInfo, fetchPeers, fetchGroups, fetchHistory, fetchGroupHistory, fetchBroadcastHistory,
   sendMessage, sendGroupMessage, sendBroadcast,
   createGroup, addToGroup, kickFromGroup, leaveGroup, disbandGroup,
   discoverPeers, connectWebSocket, registerPeer,
+  getTransfers, offerFile, acceptFile, sendTyping
 } from './api';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -19,6 +20,9 @@ export default function App() {
   const [groups, setGroups] = useState([]);
   const [activeChat, setActiveChat] = useState(null);   // { type:'peer'|'group'|'broadcast', id, name }
   const [messages, setMessages] = useState([]);
+  const [transfers, setTransfers] = useState([]);
+  const [unreadCounts, setUnreadCounts] = useState({}); // { id: count }
+  const [typingUsers, setTypingUsers] = useState({}); // { sender: timeoutId }
   const [error, setError] = useState('');
   const [toast, setToast] = useState(null);             // { message, variant: 'info'|'warn'|'error' }
   const [registering, setRegistering] = useState(false);
@@ -28,6 +32,7 @@ export default function App() {
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const activeChatRef = useRef(activeChat);
+  const downloadedRefs = useRef(new Set());
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -37,11 +42,10 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // ── Data refresh ──────────────────────────────────────────
   const refreshData = useCallback(async () => {
     try {
-      const [infoData, peersData, groupsData] = await Promise.all([
-        fetchInfo(), fetchPeers(), fetchGroups(),
+      const [infoData, peersData, groupsData, transfersData] = await Promise.all([
+        fetchInfo(), fetchPeers(), fetchGroups(), getTransfers()
       ]);
       setInfo(infoData);
       setRegistrationForm(prev => ({
@@ -52,6 +56,7 @@ export default function App() {
       }));
       setPeers(peersData || []);
       setGroups(groupsData || []);
+      setTransfers(transfersData || []);
     } catch (e) {
       console.error('Failed to refresh data:', e);
     }
@@ -60,10 +65,14 @@ export default function App() {
   // ── Chat history ──────────────────────────────────────────
   const loadHistory = useCallback(async (chat) => {
     try {
-      if (chat.type === 'broadcast') { setMessages([]); return; }
-      const msgs = chat.type === 'peer'
-        ? await fetchHistory(chat.name)
-        : await fetchGroupHistory(chat.id);
+      let msgs;
+      if (chat.type === 'broadcast') {
+        msgs = await fetchBroadcastHistory();
+      } else if (chat.type === 'peer') {
+        msgs = await fetchHistory(chat.name);
+      } else {
+        msgs = await fetchGroupHistory(chat.id);
+      }
       setMessages(msgs || []);
     } catch (e) {
       console.error('History load failed:', e);
@@ -87,20 +96,48 @@ export default function App() {
         case 'DIRECT_MESSAGE':
           if (cur?.type === 'peer' && (data.sender === cur.name || data.receiver === cur.name)) {
             setMessages(prev => [...prev, data]);
+          } else {
+            const senderName = data.sender.split(':')[0]; // get username
+            setUnreadCounts(prev => ({ ...prev, [senderName]: (prev[senderName] || 0) + 1 }));
+            showToast(`✉️ Message from ${senderName}`, 'info');
           }
           break;
 
         case 'GROUP_MESSAGE':
           if (cur?.type === 'group' && data.groupId === cur.id) {
             setMessages(prev => [...prev, data]);
+          } else {
+            setUnreadCounts(prev => ({ ...prev, [data.groupId]: (prev[data.groupId] || 0) + 1 }));
+            showToast(`👥 Message in group`, 'info');
           }
           break;
 
         case 'BROADCAST':
           if (cur?.type === 'broadcast') {
             setMessages(prev => [...prev, { ...data, type: 'BROADCAST' }]);
+          } else {
+            setUnreadCounts(prev => ({ ...prev, 'broadcast': (prev['broadcast'] || 0) + 1 }));
+            showToast(`📢 ${data.sender}: ${data.content}`, 'info');
           }
-          showToast(`📢 ${data.sender}: ${data.content}`, 'info');
+          break;
+          
+        case 'TYPING':
+          const chatKey = data.groupId || data.sender;
+          if (cur && (chatKey === cur.id || chatKey === cur.name)) {
+            setTypingUsers(prev => {
+              if (prev[data.sender]) clearTimeout(prev[data.sender]);
+              return {
+                ...prev,
+                [data.sender]: setTimeout(() => {
+                  setTypingUsers(current => {
+                    const next = { ...current };
+                    delete next[data.sender];
+                    return next;
+                  });
+                }, 3000)
+              };
+            });
+          }
           break;
 
         case 'GROUP_JOINED':
@@ -109,11 +146,17 @@ export default function App() {
           break;
 
         case 'GROUP_UPDATED':
-          setGroups(prev => prev.map(g =>
-            g.groupId === data.groupId ? { ...g, ...data } : g
-          ));
+          setGroups(prev => prev.map(g => {
+            if (g.groupId === data.groupId) {
+              const updated = { ...g, ...data };
+              if (data.members && data.members.length > 0) {
+                 updated.owner = data.members[0];
+              }
+              return updated;
+            }
+            return g;
+          }));
           if (cur?.type === 'group' && data.groupId === cur.id) {
-            // Update members in chat header
             setActiveChat(prev => prev ? { ...prev, members: data.members, coordinators: data.coordinators } : prev);
           }
           break;
@@ -142,6 +185,51 @@ export default function App() {
           }
           break;
 
+        case 'FILE_OFFER_SENT':
+          refreshData();
+          if (cur) loadHistory(cur);
+          break;
+        case 'FILE_OFFER_RECEIVED': {
+          refreshData();
+          const chatKey = data.groupId || (data.sender ? data.sender : ''); // sender here is username from FileTransferManager
+          if (cur && (cur.id === chatKey || cur.name === chatKey)) {
+            loadHistory(cur);
+          } else if (chatKey) {
+            setUnreadCounts(prev => ({ ...prev, [chatKey]: (prev[chatKey] || 0) + 1 }));
+            showToast(`📁 Bạn có file gửi đến!`, 'info');
+          }
+          break;
+        }
+
+        case 'FILE_ACCEPTED':
+        case 'FILE_REJECTED':
+        case 'FILE_DONE':
+          refreshData();
+          if (type === 'FILE_DONE') showToast(`✅ Transfer ${data.transferId} complete!`, 'info');
+          break;
+
+        case 'FILE_PROGRESS':
+          setTransfers(prev => {
+             const existing = prev.find(t => t.transferId === data.transferId);
+             if (existing) {
+               return prev.map(t => t.transferId === data.transferId ? { ...t, ...data } : t);
+             }
+             return [...prev, data];
+          });
+          
+          if (data.status === 'DONE' && !downloadedRefs.current.has(data.transferId)) {
+            downloadedRefs.current.add(data.transferId);
+            setTimeout(() => {
+                 const a = document.createElement('a');
+                 a.href = `/api/file/download/${data.transferId}`;
+                 a.download = data.filename || '';
+                 document.body.appendChild(a);
+                 a.click();
+                 document.body.removeChild(a);
+            }, 500);
+          }
+          break;
+
         default: break;
       }
     });
@@ -152,6 +240,12 @@ export default function App() {
   // ── Handlers ──────────────────────────────────────────────
   const handleSelectChat = useCallback((chat) => {
     setActiveChat(chat);
+    const unreadKey = chat.type === 'broadcast' ? 'broadcast' : (chat.id || chat.name);
+    setUnreadCounts(prev => ({ ...prev, [unreadKey]: 0 }));
+    setTypingUsers(prev => {
+      Object.values(prev).forEach(clearTimeout);
+      return {};
+    });
     loadHistory(chat);
   }, [loadHistory]);
 
@@ -183,6 +277,42 @@ export default function App() {
       setTimeout(() => setError(''), 3000);
     }
   }, [activeChat, info.username]);
+
+  const handleSendFile = useCallback(async (file) => {
+    if (!activeChat) return;
+    try {
+      if (activeChat.type === 'peer') {
+        await offerFile(file, activeChat.name, null);
+      } else if (activeChat.type === 'group') {
+        await offerFile(file, null, activeChat.id);
+      }
+      showToast(`Uploading ${file.name}...`, 'info');
+    } catch (e) {
+      showToast('File offer failed: ' + e.message, 'error');
+    }
+  }, [activeChat, showToast]);
+
+  const handleSendTyping = useCallback(async () => {
+    if (!activeChat) return;
+    try {
+      if (activeChat.type === 'peer') {
+        await sendTyping(activeChat.name, null);
+      } else if (activeChat.type === 'group') {
+        await sendTyping(null, activeChat.id);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, [activeChat]);
+
+  const handleAcceptTransfer = useCallback(async (transferId) => {
+    try {
+      await acceptFile(transferId);
+      showToast('Starting download...', 'info');
+    } catch (e) {
+      showToast('Download failed: ' + e.message, 'error');
+    }
+  }, [showToast]);
 
   const handleDiscover = useCallback(async () => {
     await discoverPeers();
@@ -306,10 +436,11 @@ export default function App() {
     <div className="app">
       <Sidebar
         username={info.username}
-        address={info.address}
+        address={`${info.host}:${info.peerPort}`}
         peers={peers}
         groups={groups}
         activeChat={activeChat}
+        unreadCounts={unreadCounts}
         onSelectChat={handleSelectChat}
         onDiscover={handleDiscover}
         onCreateGroup={handleCreateGroup}
@@ -346,10 +477,21 @@ export default function App() {
               messages={messages}
               username={info.username}
               messagesEndRef={messagesEndRef}
+              onDownload={handleAcceptTransfer}
+              transfers={transfers}
             />
+
+            {Object.keys(typingUsers).length > 0 && (
+              <div className="typing-indicator">
+                {Object.keys(typingUsers).join(', ')} {Object.keys(typingUsers).length > 1 ? 'đang soạn tin...' : 'đang soạn tin...'}
+                <span className="typing-dots"><span>.</span><span>.</span><span>.</span></span>
+              </div>
+            )}
 
             <MessageInput
               onSend={handleSend}
+              onSendFile={handleSendFile}
+              onTyping={handleSendTyping}
               disabled={activeChat.kicked}
               activeChat={activeChat}
             />

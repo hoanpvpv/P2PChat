@@ -18,6 +18,7 @@ public enum MessageType {
     DIRECT_MESSAGE,
     GROUP_MESSAGE,
     BROADCAST,
+    TYPING,
     ACK,
 
     // DHT-lite Coordinator protocol (Control Plane)

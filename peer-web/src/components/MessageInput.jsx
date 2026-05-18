@@ -1,8 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
-export default function MessageInput({ onSend, disabled, activeChat }) {
+export default function MessageInput({ onSend, onSendFile, onTyping, disabled, activeChat }) {
   const [text, setText] = useState('');
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -12,11 +14,30 @@ export default function MessageInput({ onSend, disabled, activeChat }) {
     inputRef.current?.focus();
   };
 
+  const handleChange = (e) => {
+    setText(e.target.value);
+    if (!disabled && onTyping) {
+      if (!typingTimeoutRef.current) {
+        onTyping();
+        typingTimeoutRef.current = setTimeout(() => {
+          typingTimeoutRef.current = null;
+        }, 3000); // Send typing at most every 3s
+      }
+    }
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
     }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (!file || disabled) return;
+    onSendFile(file);
+    e.target.value = ''; // reset
   };
 
   if (!activeChat) return null;
@@ -31,12 +52,31 @@ export default function MessageInput({ onSend, disabled, activeChat }) {
 
   return (
     <form className="message-input" onSubmit={handleSubmit}>
+      {activeChat.type !== 'broadcast' && (
+        <button
+          type="button"
+          className="attach-btn"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled}
+          title="Send file"
+        >
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+          </svg>
+        </button>
+      )}
+      <input
+        type="file"
+        style={{ display: 'none' }}
+        ref={fileInputRef}
+        onChange={handleFileChange}
+      />
       <input
         ref={inputRef}
         type="text"
         placeholder={placeholder}
         value={text}
-        onChange={e => setText(e.target.value)}
+        onChange={handleChange}
         onKeyDown={handleKeyDown}
         disabled={disabled}
         autoFocus

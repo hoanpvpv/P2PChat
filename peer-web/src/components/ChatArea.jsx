@@ -14,7 +14,19 @@ function formatDate(ts) {
   return d.toLocaleDateString();
 }
 
-export default function ChatArea({ messages, username, messagesEndRef }) {
+function getFileIcon(filename) {
+  if (!filename) return '📁';
+  const parts = filename.split('.');
+  const ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
+  if (['txt', 'md', 'docx', 'doc', 'pdf', 'rtf'].includes(ext)) return '📄';
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return '🖼️';
+  if (['mp4', 'webm', 'mov', 'avi'].includes(ext)) return '🎬';
+  if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) return '🎵';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '📦';
+  return '📁';
+}
+
+export default function ChatArea({ messages, username, messagesEndRef, onDownload, transfers }) {
   let lastDate = null;
 
   return (
@@ -38,7 +50,11 @@ export default function ChatArea({ messages, username, messagesEndRef }) {
               </div>
             )}
 
-            {isBroadcast ? (
+            {msg.type === 'SYSTEM' ? (
+              <div className="message system-message">
+                <div className="system-message-content">{msg.content}</div>
+              </div>
+            ) : isBroadcast ? (
               <div className="message broadcast">
                 <div className="broadcast-label">📢 Broadcast</div>
                 <div className="message-sender">{msg.sender}</div>
@@ -46,12 +62,78 @@ export default function ChatArea({ messages, username, messagesEndRef }) {
                 <div className="message-time">{formatTime(msg.timestamp)}</div>
               </div>
             ) : (
-              <div className={`message ${isSent ? 'sent' : 'received'}`}>
+              <div className={`message ${isSent ? 'sent' : 'received'} ${msg.type === 'FILE_OFFER' ? 'file-message' : ''}`}>
                 {!isSent && msg.sender && (
                   <div className="message-sender">{msg.sender}</div>
                 )}
                 <div className="message-bubble">
-                  <div className="message-content">{msg.content}</div>
+                  {msg.type === 'FILE_OFFER' ? (
+                    <div className="file-attachment">
+                      {(() => {
+                        try {
+                          const meta = JSON.parse(msg.content);
+                          const transfer = (transfers || []).find(t => t.transferId === meta.transferId);
+                          const status = transfer ? transfer.status : 'PENDING';
+                          const percent = transfer ? transfer.percent : 0;
+                          
+                          return (
+                            <div className="file-bubble-content">
+                              <div className="file-icon-large">
+                                {getFileIcon(meta.filename)}
+                              </div>
+                              <div className="file-bubble-info">
+                                <div className="file-bubble-name" title={meta.filename}>
+                                  {meta.filename}
+                                </div>
+                                <div className="file-bubble-size">
+                                  {Math.round(meta.fileSize / 1024)} KB
+                                </div>
+                                
+                                {status === 'ACTIVE' && (
+                                  <div className="file-bubble-progress">
+                                    <div className="file-progress-bar">
+                                      <div className="file-progress-fill" style={{ width: `${percent}%` }}></div>
+                                    </div>
+                                    <div className="file-progress-text">{percent}%</div>
+                                  </div>
+                                )}
+                                
+                                {!isSent && status !== 'ACTIVE' && status !== 'DONE' && (
+                                  <button className="btn-download-bubble" onClick={() => onDownload && onDownload(meta.transferId)}>
+                                    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                      <polyline points="7 10 12 15 17 10"></polyline>
+                                      <line x1="12" y1="15" x2="12" y2="3"></line>
+                                    </svg>
+                                    Download
+                                  </button>
+                                )}
+                                
+                                {status === 'DONE' && (
+                                  <div className="file-bubble-done">
+                                    ✅ Downloaded
+                                    <a href={`/api/file/download/${meta.transferId}`} download={meta.filename} className="btn-save-again" title="Save to device again">
+                                      ⬇️ Save
+                                    </a>
+                                  </div>
+                                )}
+                                
+                                {isSent && (
+                                   <div className="file-bubble-status">
+                                     {status === 'DONE' ? '✅ Delivered' : (status === 'ACTIVE' ? 'Uploading...' : 'Sent offer')}
+                                   </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        } catch(e) {
+                          return <div className="message-content">{msg.content}</div>;
+                        }
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="message-content">{msg.content}</div>
+                  )}
                   <div className="message-time">{formatTime(msg.timestamp)}</div>
                 </div>
               </div>

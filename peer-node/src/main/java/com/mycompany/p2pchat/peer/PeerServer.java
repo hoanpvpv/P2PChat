@@ -88,6 +88,7 @@ public class PeerServer {
                 case DIRECT_MESSAGE  -> { handleDirectMessage(msg); sendAck(msg, socket); }
                 case GROUP_MESSAGE   -> handleGroupMessage(msg, socket);
                 case BROADCAST       -> { handleBroadcast(msg); sendAck(msg, socket); }
+                case TYPING          -> handleTyping(msg);
                 case OFFLINE_MESSAGE -> { handleOfflineMessage(msg); }
 
                 // ── Peer events from Bootstrap ──
@@ -115,6 +116,12 @@ public class PeerServer {
 
                 // ── Peer lookup relay ──
                 case PEER_LOOKUP_REQ  -> handlePeerLookupReq(msg, socket);
+
+                // ── File Transfer ──
+                case FILE_OFFER  -> peerManager.getFileTransferManager().handleFileOffer(msg);
+                case FILE_ACCEPT -> peerManager.getFileTransferManager().handleFileAccept(msg);
+                case FILE_REJECT -> peerManager.getFileTransferManager().handleFileReject(msg);
+                case FILE_DONE   -> peerManager.getFileTransferManager().handleFileDone(msg);
 
                 default -> logger.fine("Unhandled message type: " + type);
             }
@@ -186,6 +193,10 @@ public class PeerServer {
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
         peerManager.getMessageRepository().saveMessage(msg);
         broadcastWs("BROADCAST", messageToMap(msg));
+    }
+
+    private void handleTyping(Message msg) {
+        broadcastWs("TYPING", messageToMap(msg));
     }
 
     private void handleOfflineMessage(Message msg) {
@@ -320,6 +331,32 @@ public class PeerServer {
         if (msg.getVersion() > 0) entry.setLocalVersion(msg.getVersion());
         if (msg.getGroupMode() != null) entry.setGroupMode(msg.getGroupMode());
         entry.setLastUpdated(System.currentTimeMillis());
+
+        String change = msg.getChangeType();
+        String affected = msg.getAffected();
+        if (change != null && affected != null && !affected.isEmpty()) {
+            String content = "";
+            switch (change) {
+                case "ADD": content = affected + " đã tham gia nhóm."; break;
+                case "KICK": content = affected + " đã bị xóa khỏi nhóm."; break;
+                case "LEAVE": content = affected + " đã rời nhóm."; break;
+                case "OWNER_LEAVE": content = affected + " (Chủ phòng) đã rời nhóm."; break;
+            }
+            if (!content.isEmpty()) {
+                Message sysMsg = Message.builder()
+                        .type("SYSTEM")
+                        .messageId("sys-" + UUID.randomUUID().toString())
+                        .sender("SYSTEM")
+                        .groupId(msg.getGroupId())
+                        .groupName(entry.getGroupName())
+                        .content(content)
+                        .timestamp(System.currentTimeMillis())
+                        .build();
+                peerManager.getMessageRepository().saveMessage(sysMsg);
+                broadcastWs("GROUP_MESSAGE", messageToMap(sysMsg));
+            }
+        }
+
         broadcastWs("GROUP_UPDATED", messageToMapFull(msg));
     }
 

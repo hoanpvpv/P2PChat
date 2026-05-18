@@ -21,6 +21,7 @@ public class PeerManager {
     private final LamportClock lamportClock;
     private final RecentPeersCache recentPeersCache;
     private LazyRepairManager lazyRepairManager;
+    private final com.mycompany.p2pchat.filetransfer.FileTransferManager fileTransferManager;
 
     // Peer identity
     private String bootstrapHost;
@@ -40,6 +41,7 @@ public class PeerManager {
         this.groupCache = new GroupCache();
         this.lamportClock = new LamportClock();
         this.recentPeersCache = new RecentPeersCache(dbManager);
+        this.fileTransferManager = new com.mycompany.p2pchat.filetransfer.FileTransferManager(this);
     }
 
     // ==================== Peer State ====================
@@ -178,6 +180,7 @@ public class PeerManager {
 
     public boolean isRegisteredToBootstrap() { return registeredToBootstrap; }
     public String getLastBootstrapError() { return lastBootstrapError; }
+    public com.mycompany.p2pchat.filetransfer.FileTransferManager getFileTransferManager() { return fileTransferManager; }
 
     public void shutdown() { dbManager.close(); }
 }

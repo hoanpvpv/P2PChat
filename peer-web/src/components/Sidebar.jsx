@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 
 export default function Sidebar({
-  username, address, peers, groups, activeChat,
+  username, address, peers, groups, activeChat, unreadCounts = {},
   onSelectChat, onDiscover, onCreateGroup, onAddToGroup,
   onKickFromGroup, onLeaveGroup, onDisbandGroup,
   isOwner, isCoord,
@@ -10,6 +10,15 @@ export default function Sidebar({
   const [groupName, setGroupName] = useState('');
   const [groupMode, setGroupMode] = useState('OPEN');
   const [selectedMembers, setSelectedMembers] = useState([]);
+  const [showAddMember, setShowAddMember] = useState(false);
+  
+  const [peerSearch, setPeerSearch] = useState('');
+  const [groupSearch, setGroupSearch] = useState('');
+
+  const handleSelectChatLocal = (chat) => {
+    setShowAddMember(false);
+    onSelectChat(chat);
+  };
 
   const handleCreateGroup = (e) => {
     e.preventDefault();
@@ -44,13 +53,16 @@ export default function Sidebar({
       {/* Broadcast shortcut */}
       <div
         className={`chat-item broadcast-item ${activeChat?.type === 'broadcast' ? 'active' : ''}`}
-        onClick={() => onSelectChat({ type: 'broadcast', id: '__broadcast__', name: '# Broadcast' })}
+        onClick={() => handleSelectChatLocal({ type: 'broadcast', id: '__broadcast__', name: '# Broadcast' })}
       >
         <div className="chat-item-icon broadcast-icon">📢</div>
         <div className="chat-item-info">
           <div className="chat-item-name"># Broadcast</div>
           <div className="chat-item-status">All peers</div>
         </div>
+        {unreadCounts['broadcast'] > 0 && (
+          <div className="unread-badge">{unreadCounts['broadcast'] > 5 ? '5+' : unreadCounts['broadcast']}</div>
+        )}
       </div>
 
       {/* Peers section */}
@@ -58,12 +70,21 @@ export default function Sidebar({
         <span className="section-title">Peers</span>
         <button className="section-btn" onClick={onDiscover} title="Refresh peer list">↻</button>
       </div>
+      <div className="search-container">
+        <input 
+          type="text" 
+          className="search-input" 
+          placeholder="Search peers..." 
+          value={peerSearch}
+          onChange={e => setPeerSearch(e.target.value)}
+        />
+      </div>
       <div className="sidebar-list">
-        {(peers || []).map(peer => (
+        {(peers || []).filter(p => p.username.toLowerCase().includes(peerSearch.toLowerCase())).map(peer => (
           <div
             key={peer.username}
             className={`chat-item ${activePeerId === peer.username ? 'active' : ''}`}
-            onClick={() => onSelectChat({ type: 'peer', id: peer.username, name: peer.username })}
+            onClick={() => handleSelectChatLocal({ type: 'peer', id: peer.username, name: peer.username })}
           >
             <div className="chat-item-icon">
               {peer.username.charAt(0).toUpperCase()}
@@ -74,6 +95,9 @@ export default function Sidebar({
                 {peer.online ? '● online' : '○ offline'}
               </div>
             </div>
+            {unreadCounts[peer.username] > 0 && (
+              <div className="unread-badge">{unreadCounts[peer.username] > 5 ? '5+' : unreadCounts[peer.username]}</div>
+            )}
           </div>
         ))}
         {!peers?.length && (
@@ -128,8 +152,17 @@ export default function Sidebar({
         </form>
       )}
 
+      <div className="search-container">
+        <input 
+          type="text" 
+          className="search-input" 
+          placeholder="Search groups..." 
+          value={groupSearch}
+          onChange={e => setGroupSearch(e.target.value)}
+        />
+      </div>
       <div className="sidebar-list">
-        {(groups || []).map(group => {
+        {(groups || []).filter(g => g.groupName?.toLowerCase().includes(groupSearch.toLowerCase())).map(group => {
           const isActive = activeGroupId === group.groupId;
           const iAmOwner = group.owner === address;
           const iAmCoord = group.coordinators?.includes(address);
@@ -138,7 +171,7 @@ export default function Sidebar({
             <div key={group.groupId} className={`group-item-wrapper ${group.groupState === 'LEAVING' ? 'leaving' : ''}`}>
               <div
                 className={`chat-item ${isActive ? 'active' : ''}`}
-                onClick={() => onSelectChat({
+                onClick={() => handleSelectChatLocal({
                   type: 'group', id: group.groupId, name: group.groupName,
                   members: group.members, coordinators: group.coordinators,
                 })}
@@ -158,6 +191,9 @@ export default function Sidebar({
                     </span>
                   </div>
                 </div>
+                {unreadCounts[group.groupId] > 0 && (
+                  <div className="unread-badge">{unreadCounts[group.groupId] > 5 ? '5+' : unreadCounts[group.groupId]}</div>
+                )}
               </div>
 
               {/* Expanded panel for active group */}
@@ -187,23 +223,28 @@ export default function Sidebar({
                   </div>
 
                   {/* Add member (OPEN mode or owner/coord in RESTRICTED) */}
-                  {(group.groupMode === 'OPEN' || iAmOwner || iAmCoord) && (
+                  {showAddMember && (group.groupMode === 'OPEN' || iAmOwner || iAmCoord) && (
                     <AddMemberRow
                       groupId={group.groupId}
                       existingAddrs={group.members || []}
                       peers={peers}
-                      onAdd={onAddToGroup}
+                      onAdd={(g, p) => { onAddToGroup(g, p); setShowAddMember(false); }}
                     />
                   )}
 
                   {/* Group actions */}
                   <div className="group-actions">
                     <button className="btn-leave" onClick={() => onLeaveGroup(group.groupId)}>
-                      Leave Group
+                      Leave
                     </button>
                     {iAmOwner && (
                       <button className="btn-disband" onClick={() => onDisbandGroup(group.groupId)}>
                         Disband
+                      </button>
+                    )}
+                    {(group.groupMode === 'OPEN' || iAmOwner || iAmCoord) && (
+                      <button className="btn-add-member-toggle" style={{ marginLeft: 'auto' }} onClick={() => setShowAddMember(!showAddMember)}>
+                        {showAddMember ? '✕' : '+'}
                       </button>
                     )}
                   </div>
@@ -221,23 +262,31 @@ export default function Sidebar({
 }
 
 function AddMemberRow({ groupId, existingAddrs, peers, onAdd }) {
-  const [selected, setSelected] = useState('');
+  const [search, setSearch] = useState('');
   const available = peers.filter(p =>
     !existingAddrs.some(addr => addr.includes(p.host) && addr.includes(String(p.port)))
   );
   if (!available.length) return null;
+
+  const filtered = available.filter(p => p.username.toLowerCase().includes(search.toLowerCase()));
+
   return (
-    <div className="add-member-row">
-      <select value={selected} onChange={e => setSelected(e.target.value)}>
-        <option value="" disabled>Add member...</option>
-        {available.map(p => (
-          <option key={p.username} value={p.username}>{p.username}</option>
+    <div className="add-member-container">
+      <input 
+        type="text"
+        className="search-input member-search" 
+        placeholder="Search member to add..." 
+        value={search} 
+        onChange={e => setSearch(e.target.value)} 
+      />
+      <div className="add-member-list">
+        {filtered.map(p => (
+           <div key={p.username} className="add-member-item">
+             <span>{p.username}</span>
+             <button className="btn-add-member" onClick={() => { onAdd(groupId, p.username); setSearch(''); }}>+</button>
+           </div>
         ))}
-      </select>
-      <button
-        className="btn-add-member"
-        onClick={() => { if (selected) { onAdd(groupId, selected); setSelected(''); } }}
-      >+</button>
+      </div>
     </div>
   );
 }

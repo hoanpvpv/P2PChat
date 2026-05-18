@@ -2,7 +2,7 @@ package com.mycompany.p2pchat.utils;
 
 public class Constants {
     // Bootstrap
-    public static final int DEFAULT_BOOTSTRAP_PORT = 9000;
+    public static final int DEFAULT_BOOTSTRAP_PORT = 8080;
     public static final int DEFAULT_PEER_PORT = 5001;
     public static final int DEFAULT_WEB_PORT = 3000;
 

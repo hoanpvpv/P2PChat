@@ -38,6 +38,11 @@ export async function fetchGroupHistory(groupId) {
   return res.json();
 }
 
+export async function fetchBroadcastHistory() {
+  const res = await fetch(`${API_BASE}/broadcast-history`);
+  return res.json();
+}
+
 export async function sendMessage(receiver, content) {
   const res = await fetch(`${API_BASE}/msg`, {
     method: 'POST',
@@ -122,6 +127,66 @@ export async function sendGroupMessage(groupId, content) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId, content }),
+  });
+  return res.json();
+}
+
+export async function sendTyping(receiver, groupId) {
+  const body = {};
+  if (receiver) body.receiver = receiver;
+  if (groupId) body.groupId = groupId;
+  
+  const res = await fetch(`${API_BASE}/typing`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+// ── File Transfer ─────────────────────────────────────────────
+export async function getTransfers() {
+  const res = await fetch(`${API_BASE}/file/transfers`);
+  return res.json();
+}
+
+export async function offerFile(file, receiver, groupId) {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (receiver) formData.append('receiver', receiver);
+  if (groupId) formData.append('groupId', groupId);
+
+  const res = await fetch(`${API_BASE}/file/offer`, {
+    method: 'POST',
+    body: formData,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to offer file');
+  return data;
+}
+
+export async function acceptFile(transferId) {
+  const res = await fetch(`${API_BASE}/file/accept`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transferId }),
+  });
+  return res.json();
+}
+
+export async function rejectFile(transferId, reason = 'Rejected') {
+  const res = await fetch(`${API_BASE}/file/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transferId, reason }),
+  });
+  return res.json();
+}
+
+export async function cancelFile(transferId) {
+  const res = await fetch(`${API_BASE}/file/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transferId }),
   });
   return res.json();
 }

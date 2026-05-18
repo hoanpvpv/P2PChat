@@ -119,6 +119,11 @@ public class WebServer {
             ctx.contentType("application/json").result(gson.toJson(msgs));
         });
 
+        app.get("/api/broadcast-history", ctx -> {
+            List<Message> msgs = peerManager.getMessageRepository().getBroadcastHistory();
+            ctx.contentType("application/json").result(gson.toJson(msgs));
+        });
+
         app.post("/api/msg", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
             String receiver = body.get("receiver"), content = body.get("content");
@@ -132,6 +137,35 @@ public class WebServer {
             String content = body.get("content");
             if (content == null) { ctx.status(400).result("Missing content"); return; }
             peerClient.sendBroadcast(peerManager.getLocalUsername(), content);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", true)));
+        });
+
+        app.post("/api/typing", ctx -> {
+            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
+            String receiver = body.get("receiver");
+            String groupId = body.get("groupId");
+            
+            if (receiver != null) {
+                PeerInfo peer = peerManager.getPeer(receiver);
+                if (peer != null) {
+                    try {
+                        peerClient.sendSignal(peer.getHost(), peer.getPort(), MessageType.TYPING.name(), "", "");
+                    } catch (Exception ignored) {}
+                }
+            } else if (groupId != null) {
+                GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+                if (entry != null) {
+                    for (String addr : entry.getMembers()) {
+                        if (addr.equals(peerManager.getLocalAddress())) continue;
+                        String[] parts = addr.split(":");
+                        if (parts.length == 2) {
+                            try {
+                                peerClient.sendSignal(parts[0], Integer.parseInt(parts[1]), MessageType.TYPING.name(), groupId, "");
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+            }
             ctx.contentType("application/json").result(gson.toJson(Map.of("sent", true)));
         });
 
@@ -203,6 +237,7 @@ public class WebServer {
             if (groupMode.isEmpty()) groupMode = "OPEN";
 
             if (groupName.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupName"))); return; }
+            if (memberUsernames.size() < 2) { ctx.status(400).result(gson.toJson(Map.of("error", "Group must have at least 3 members (including you)"))); return; }
 
             // Resolve member addresses
             List<String> memberAddresses = new ArrayList<>();
@@ -358,6 +393,85 @@ public class WebServer {
             if (groupName == null) { ctx.status(400).result("Missing groupName"); return; }
             peerManager.createGroup(groupName);
             ctx.contentType("application/json").result(gson.toJson(Map.of("created", true)));
+        });
+
+        // ── File Transfer API ──
+        app.get("/api/file/transfers", ctx -> {
+            var list = peerManager.getFileTransferManager().getAllTransfers();
+            ctx.contentType("application/json").result(gson.toJson(list));
+        });
+
+        app.post("/api/file/offer", ctx -> {
+            // Support multipart upload from React UI
+            var uploadedFile = ctx.uploadedFile("file");
+            String receiver = ctx.formParam("receiver");
+            String groupId = ctx.formParam("groupId");
+
+            if (uploadedFile == null) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "No file uploaded")));
+                return;
+            }
+
+            // Save uploaded file temporarily to Downloads folder
+            java.nio.file.Path dir = peerManager.getFileTransferManager().getDownloadDir();
+            java.nio.file.Path tempFile = dir.resolve(uploadedFile.filename());
+            try (var in = uploadedFile.content(); var out = java.nio.file.Files.newOutputStream(tempFile)) {
+                in.transferTo(out);
+            }
+
+            String transferId;
+            if (groupId != null && !groupId.isEmpty()) {
+                transferId = peerManager.getFileTransferManager().offerFileToGroup(tempFile, groupId);
+            } else if (receiver != null && !receiver.isEmpty()) {
+                transferId = peerManager.getFileTransferManager().offerFile(tempFile, receiver);
+            } else {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing receiver or groupId")));
+                return;
+            }
+            ctx.contentType("application/json").result(gson.toJson(Map.of("transferId", transferId)));
+        });
+
+        app.post("/api/file/accept", ctx -> {
+            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
+            String transferId = body.get("transferId");
+            peerManager.getFileTransferManager().acceptOffer(transferId);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("accepted", true)));
+        });
+
+        app.post("/api/file/reject", ctx -> {
+            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
+            String transferId = body.get("transferId");
+            String reason = body.getOrDefault("reason", "Rejected by user");
+            peerManager.getFileTransferManager().rejectOffer(transferId, reason);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("rejected", true)));
+        });
+
+        app.post("/api/file/cancel", ctx -> {
+            Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
+            String transferId = body.get("transferId");
+            peerManager.getFileTransferManager().cancelOutbound(transferId);
+            ctx.contentType("application/json").result(gson.toJson(Map.of("cancelled", true)));
+        });
+
+        app.get("/api/file/download/{transferId}", ctx -> {
+            String transferId = ctx.pathParam("transferId");
+            var meta = peerManager.getFileTransferManager().getTransfer(transferId);
+            if (meta == null) {
+                ctx.status(404).result("Transfer not found");
+                return;
+            }
+            if (!"DONE".equals(meta.status.name())) {
+                ctx.status(400).result("File is not fully downloaded yet");
+                return;
+            }
+            java.nio.file.Path file = peerManager.getFileTransferManager().getDownloadDir().resolve(meta.filename);
+            if (!java.nio.file.Files.exists(file)) {
+                ctx.status(404).result("File not found on disk");
+                return;
+            }
+            ctx.header("Content-Disposition", "attachment; filename=\"" + meta.filename + "\"");
+            ctx.contentType("application/octet-stream");
+            ctx.result(java.nio.file.Files.newInputStream(file));
         });
     }
 

@@ -7,6 +7,7 @@ NETWORK="p2p-net"
 BOOTSTRAP_IMG="p2pchat-bootstrap"
 PEER_IMG="p2pchat-peer"
 BOOTSTRAP_PORT=8080
+DASHBOARD_PORT=8081
 
 ensure_network() {
     docker network inspect $NETWORK >/dev/null 2>&1 || docker network create $NETWORK >/dev/null
@@ -16,9 +17,10 @@ ensure_bootstrap() {
     if ! docker ps --format '{{.Names}}' | grep -q '^bootstrap$'; then
         docker rm -f bootstrap 2>/dev/null || true
         ensure_network
-        docker run -d --name bootstrap --network $NETWORK -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} $BOOTSTRAP_IMG >/dev/null
+        docker run -d --name bootstrap --network $NETWORK \
+            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} $BOOTSTRAP_IMG >/dev/null
         sleep 1
-        echo "Bootstrap server started on port $BOOTSTRAP_PORT"
+        echo "Bootstrap server started on port $BOOTSTRAP_PORT (Dashboard: $DASHBOARD_PORT)"
     fi
 }
 
@@ -35,17 +37,24 @@ build() {
 
 peer() {
     local username="${1:?Usage: ./run.sh peer <username>}"
+    local web_port="$2"
     ensure_network
     ensure_bootstrap
 
-    local peer_port=$(random_port)
-    local web_port=$(random_port)
+    if [ -z "$web_port" ]; then
+        if [ "$username" = "alice" ]; then web_port=33143;
+        elif [ "$username" = "bob" ]; then web_port=33144;
+        else web_port=$(random_port); fi
+    fi
+
+    local peer_port=$((web_port + 1000))
+    local file_port=$((peer_port + 1000))
     local container_name="peer-${username}"
 
     docker rm -f $container_name 2>/dev/null || true
 
     docker run -d --name $container_name --network $NETWORK \
-        -p ${peer_port}:${peer_port} -p ${web_port}:${web_port} $PEER_IMG \
+        -p ${peer_port}:${peer_port} -p ${file_port}:${file_port} -p ${web_port}:${web_port} $PEER_IMG \
         --username "$username" --host $container_name --port $peer_port --bootstrap bootstrap:${BOOTSTRAP_PORT} --web $web_port >/dev/null
 
     sleep 1
@@ -57,10 +66,8 @@ peer() {
 }
 
 start() {
-    local username="${1:-alice}"
-    local username2="${2:-bob}"
-    peer "$username"
-    peer "$username2"
+    peer "alice" "33143"
+    peer "bob" "33144"
 }
 
 stop() {

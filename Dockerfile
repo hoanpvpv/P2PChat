@@ -17,5 +17,5 @@ FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=build-java /app/target/peer-node.jar /app/peer-node.jar
 RUN mkdir /app/data
-EXPOSE 5001 5002 5003 5004 3000
+EXPOSE 5001 5002 5003 5004 6001 6002 6003 6004 3000
 ENTRYPOINT ["java", "-jar", "/app/peer-node.jar"]

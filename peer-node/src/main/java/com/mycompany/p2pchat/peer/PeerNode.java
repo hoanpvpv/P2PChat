@@ -54,6 +54,19 @@ public class PeerNode {
         this.peerServer.setCoordinatorManager(coordinatorManager);
         this.webServer.setCoordinatorManager(coordinatorManager);
         this.coordinatorManager.setWebServer(webServer);
+        this.peerManager.getFileTransferManager().setWebServer(webServer);
+    }
+
+    public void setConfig(String username, String host, String bootstrap) {
+        if (username != null && !username.isEmpty()) this.peerManager.setLocalUsername(username);
+        if (host != null && !host.isEmpty()) this.peerManager.setLocalHost(host);
+        if (bootstrap != null && !bootstrap.isEmpty()) {
+            String[] parts = bootstrap.split(":");
+            this.peerManager.setBootstrapHost(parts[0]);
+            if (parts.length > 1) {
+                this.peerManager.setBootstrapPort(Integer.parseInt(parts[1]));
+            }
+        }
     }
 
     public void start() {
@@ -61,6 +74,7 @@ public class PeerNode {
         peerServer.start();
         webServer.start();
         coordinatorManager.start();
+        peerManager.getFileTransferManager().start();
 
         System.out.println("=== P2PChat Peer ===");
         System.out.println("Peer server on port " + port);
@@ -111,10 +125,11 @@ public class PeerNode {
                 }
             }
         } catch (IOException e) {
-            peerManager.markBootstrapRegistrationFailure(e.getMessage());
+            peerManager.markBootstrapRegistrationFailure("Connection error: " + e.getMessage());
             logger.severe("Registration failed: " + e.getMessage());
+            return false;
         }
-        peerManager.markBootstrapRegistrationFailure("Bootstrap rejected registration");
+        peerManager.markBootstrapRegistrationFailure("Bootstrap rejected registration (invalid response)");
         return false;
     }
 
@@ -284,6 +299,7 @@ public class PeerNode {
         running = false;
         System.out.println("\nShutting down...");
         notifyBootstrapLeave();
+        peerManager.getFileTransferManager().stop();
         coordinatorManager.stop();
         webServer.stop();
         peerServer.stop();

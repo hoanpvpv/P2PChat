@@ -37,7 +37,7 @@ public class MessageRepository {
         List<Message> messages = new ArrayList<>();
         String sql = "SELECT * FROM messages WHERE " +
                 "((sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?)) " +
-                "AND type = 'DIRECT_MESSAGE' ORDER BY timestamp ASC";
+                "AND type IN ('DIRECT_MESSAGE', 'FILE_OFFER') ORDER BY timestamp ASC";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
             pstmt.setString(1, user1);
             pstmt.setString(2, user2);
@@ -55,7 +55,7 @@ public class MessageRepository {
 
     public List<Message> getGroupHistory(String groupName) {
         List<Message> messages = new ArrayList<>();
-        String sql = "SELECT * FROM messages WHERE group_name = ? AND type = 'GROUP_MESSAGE' ORDER BY timestamp ASC";
+        String sql = "SELECT * FROM messages WHERE group_name = ? AND type IN ('GROUP_MESSAGE', 'FILE_OFFER') ORDER BY timestamp ASC";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
             pstmt.setString(1, groupName);
             ResultSet rs = pstmt.executeQuery();
@@ -64,6 +64,20 @@ public class MessageRepository {
             }
         } catch (SQLException e) {
             logger.severe("Failed to get group history: " + e.getMessage());
+        }
+        return messages;
+    }
+
+    public List<Message> getBroadcastHistory() {
+        List<Message> messages = new ArrayList<>();
+        String sql = "SELECT * FROM messages WHERE type = 'BROADCAST' ORDER BY timestamp ASC";
+        try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                messages.add(mapResultSetToMessage(rs));
+            }
+        } catch (SQLException e) {
+            logger.severe("Failed to get broadcast history: " + e.getMessage());
         }
         return messages;
     }
