@@ -15,43 +15,41 @@ import java.util.logging.Logger;
 public class PeerNode {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerNode.class.getName());
-    private final int port;
+    private int port;
     private final int webPort;
-    private final PeerManager peerManager;
-    private final PeerServer peerServer;
+    private PeerManager peerManager;
+    private PeerServer peerServer;
     private final PeerClient peerClient;
-    private final WebServer webServer;
-    private final CoordinatorManager coordinatorManager;
-    private final LazyRepairManager lazyRepairManager;
+    private WebServer webServer;
+    private CoordinatorManager coordinatorManager;
+    private LazyRepairManager lazyRepairManager;
     private volatile boolean running = false;
     private volatile boolean heartbeatStarted = false;
 
-    public PeerNode(int port, int webPort) {
-        this.port = port;
+    public PeerNode(int webPort) {
+        this.port = com.mycompany.p2pchat.utils.Constants.DEFAULT_PEER_PORT;
         this.webPort = webPort;
 
-        this.peerManager = new PeerManager("peer-" + port);
+        this.peerManager = new PeerManager("peer-" + this.port);
         this.peerManager.setBootstrapHost("localhost");
         this.peerManager.setBootstrapPort(Constants.DEFAULT_BOOTSTRAP_PORT);
         this.peerManager.setLocalHost("localhost");
-        this.peerManager.setLocalPort(port);
-        this.peerManager.setWebPort(webPort);
+        this.peerManager.setLocalPort(this.port);
+        this.peerManager.setWebPort(this.webPort);
         this.peerManager.setLocalUsername("");
-        this.peerManager.markBootstrapRegistrationFailure("Not connected yet");
+        this.peerManager.markBootstrapRegistrationFailure("Peer has not been connected to a bootstrap server yet");
 
-        // Wire DHT-lite components
-        String myAddress = "localhost:" + port;  // temporary, updated after registration
+        // We defer starting CoordinatorManager and LazyRepairManager until initPeer()
+        // But we can initialize them with a dummy address for now to avoid nulls
+        String myAddress = "localhost:" + this.port;
         this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
         this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
         this.peerManager.setLazyRepairManager(lazyRepairManager);
 
-        this.peerServer = new PeerServer(port, peerManager);
+        this.peerServer = null;
         this.peerClient = new PeerClient(peerManager);
         this.webServer = new WebServer(webPort, peerManager, peerClient, this);
-
         // Wire cross-references
-        this.peerServer.setWebServer(webServer);
-        this.peerServer.setCoordinatorManager(coordinatorManager);
         this.webServer.setCoordinatorManager(coordinatorManager);
         this.coordinatorManager.setWebServer(webServer);
         this.peerManager.getFileTransferManager().setWebServer(webServer);
@@ -71,26 +69,48 @@ public class PeerNode {
 
     public void start() {
         running = true;
-        peerServer.start();
         webServer.start();
         coordinatorManager.start();
         peerManager.getFileTransferManager().start();
 
         System.out.println("=== P2PChat Peer ===");
-        System.out.println("Peer server on port " + port);
         System.out.println("Web UI: http://localhost:" + webPort);
-        System.out.println("Open the Web UI and connect to bootstrap server.");
-        System.out.println("Type /help for CLI commands.\n");
+        System.out.println("Open the web UI to set up your peer.");
+        System.out.println("Type /help for available commands after connecting.\n");
 
         startCli();
     }
 
-    public synchronized boolean connectToBootstrap(String username, String host,
-                                                    String bootstrapHost, int bootstrapPort) {
+    public synchronized void initPeer(int peerPort, String username) {
+        this.port = peerPort;
+        this.peerManager.setLocalPort(peerPort);
+        this.peerManager.setLocalUsername(username);
+        this.peerManager.clearKnownPeers();
+        
+        String myAddress = peerManager.getLocalHost() + ":" + peerPort;
+
+        if (this.peerServer != null) {
+            this.peerServer.stop();
+        }
+        
+        if (this.coordinatorManager != null) {
+            this.coordinatorManager.stop();
+        }
+
+        this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
+        this.coordinatorManager.setWebServer(webServer);
+        this.coordinatorManager.start();
+
+        this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
+        this.peerManager.setLazyRepairManager(lazyRepairManager);
+
+        this.peerServer = new PeerServer(peerPort, peerManager);
+        this.peerServer.setWebServer(webServer);
+        this.peerServer.setCoordinatorManager(this.coordinatorManager);
+        this.peerServer.start();
+
+        this.webServer.setCoordinatorManager(this.coordinatorManager);
         peerManager.setLocalUsername(username);
-        peerManager.setLocalHost(host);
-        peerManager.setBootstrapHost(bootstrapHost);
-        peerManager.setBootstrapPort(bootstrapPort);
         peerManager.clearKnownPeers();
 
         boolean registered = registerWithBootstrap();
@@ -99,7 +119,6 @@ public class PeerNode {
             // Trigger Repair 3: restart — resync all cached groups
             lazyRepairManager.repairAllOnRestart();
         }
-        return registered;
     }
 
     private boolean registerWithBootstrap() {
@@ -189,15 +208,32 @@ public class PeerNode {
         String[] parts = input.split("\\s+", 2);
         String cmd = parts[0].toLowerCase();
         switch (cmd) {
-            case "/help"      -> printHelp();
-            case "/peers"     -> listPeers();
-            case "/discover"  -> { if (requireReg()) discoverCli(); }
-            case "/msg"       -> { if (requireReg() && parts.length > 1) sendDirectCli(parts[1]); }
-            case "/group"     -> { if (requireReg()) handleGroupCli(parts.length > 1 ? parts[1] : ""); }
-            case "/broadcast" -> { if (requireReg() && parts.length > 1) peerClient.sendBroadcast(peerManager.getLocalUsername(), parts[1]); }
-            case "/history"   -> { if (parts.length > 1) showHistory(parts[1].trim()); }
-            case "/exit"      -> shutdown();
-            default           -> System.out.println("Unknown command: " + cmd + ". Type /help.");
+            case "/help":
+                printHelp();
+                break;
+            case "/peers":
+                listPeers();
+                break;
+            case "/discover":
+                if (requireReg()) discoverCli();
+                break;
+            case "/msg":
+                if (requireReg() && parts.length > 1) sendDirectCli(parts[1]);
+                break;
+            case "/group":
+                if (requireReg()) handleGroupCli(parts.length > 1 ? parts[1] : "");
+                break;
+            case "/broadcast":
+                if (requireReg() && parts.length > 1) peerClient.sendBroadcast(peerManager.getLocalUsername(), parts[1]);
+                break;
+            case "/history":
+                if (parts.length > 1) showHistory(parts[1].trim());
+                break;
+            case "/exit":
+                shutdown();
+                break;
+            default:
+                System.out.println("Unknown command: " + cmd + ". Type /help.");
         }
     }
 
@@ -302,7 +338,9 @@ public class PeerNode {
         peerManager.getFileTransferManager().stop();
         coordinatorManager.stop();
         webServer.stop();
-        peerServer.stop();
+        if (peerServer != null) {
+            peerServer.stop();
+        }
         peerClient.shutdown();
         peerManager.shutdown();
         System.out.println("Goodbye!");

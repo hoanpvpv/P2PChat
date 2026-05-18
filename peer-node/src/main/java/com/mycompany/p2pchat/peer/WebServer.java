@@ -132,6 +132,48 @@ public class WebServer {
             ctx.contentType("application/json").result(gson.toJson(Map.of("sent", sent)));
         });
 
+        app.get("/api/auto-detect-host", ctx -> {
+            Map<String, Object> result = new HashMap<>();
+            try (java.net.Socket s = new java.net.Socket(
+                    peerManager.getBootstrapHost(),
+                    peerManager.getBootstrapPort())) {
+                s.setSoTimeout(2000);
+                String localIp = s.getLocalAddress().getHostAddress();
+                result.put("host", localIp);
+                result.put("status", "bootstrap_reachable");
+            } catch (Exception e) {
+                result.put("host", "localhost");
+                result.put("status", "bootstrap_unreachable");
+            }
+            ctx.contentType("application/json").result(gson.toJson(result));
+        });
+
+        app.post("/api/init", ctx -> {
+            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
+            String username = body.get("username") != null ? body.get("username").toString().trim() : "";
+            Number peerPortValue = body.get("peerPort") instanceof Number ? (Number) body.get("peerPort") : null;
+            int peerPort = peerPortValue != null ? peerPortValue.intValue() : 0;
+
+            if (username.isEmpty()) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Missing username")));
+                return;
+            }
+            if (peerPort <= 0 || peerPort > 65535) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Invalid peer port")));
+                return;
+            }
+
+            peerNode.initPeer(peerPort, username);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("initialized", true);
+            response.put("username", peerManager.getLocalUsername());
+            response.put("peerPort", peerManager.getLocalPort());
+            response.put("registered", peerManager.isRegisteredToBootstrap());
+            response.put("lastBootstrapError", peerManager.getLastBootstrapError());
+            ctx.contentType("application/json").result(gson.toJson(response));
+        });
+
         app.post("/api/broadcast", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
             String content = body.get("content");
@@ -169,30 +211,7 @@ public class WebServer {
             ctx.contentType("application/json").result(gson.toJson(Map.of("sent", true)));
         });
 
-        // ── Register ──
-        app.post("/api/register", ctx -> {
-            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
-            String username = getString(body, "username");
-            String bootstrapHost = getString(body, "bootstrapHost");
-            String host = getString(body, "host");
-            int bootstrapPort = getInt(body, "bootstrapPort", peerManager.getBootstrapPort());
 
-            if (username.isEmpty() || bootstrapHost.isEmpty() || host.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing required fields")));
-                return;
-            }
-            boolean registered = peerNode.connectToBootstrap(username, host, bootstrapHost, bootstrapPort);
-            Map<String, Object> resp = new HashMap<>();
-            resp.put("username", peerManager.getLocalUsername());
-            resp.put("registered", registered);
-            resp.put("bootstrapHost", peerManager.getBootstrapHost());
-            resp.put("bootstrapPort", peerManager.getBootstrapPort());
-            resp.put("host", peerManager.getLocalHost());
-            resp.put("address", peerManager.getLocalAddress());
-            resp.put("lastBootstrapError", peerManager.getLastBootstrapError());
-            resp.put("peers", peerManager.getOnlinePeers());
-            ctx.contentType("application/json").status(registered ? 200 : 400).result(gson.toJson(resp));
-        });
 
         // ── Groups — New DHT-lite API ──
         app.get("/api/group/list", ctx -> {
