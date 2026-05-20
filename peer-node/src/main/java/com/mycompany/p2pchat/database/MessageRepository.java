@@ -55,7 +55,7 @@ public class MessageRepository {
 
     public List<Message> getGroupHistory(String groupName) {
         List<Message> messages = new ArrayList<>();
-        String sql = "SELECT * FROM messages WHERE group_name = ? AND type IN ('GROUP_MESSAGE', 'FILE_OFFER') ORDER BY timestamp ASC";
+        String sql = "SELECT * FROM messages WHERE group_name = ? AND type IN ('GROUP_MESSAGE', 'FILE_OFFER', 'SYSTEM') ORDER BY timestamp ASC";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
             pstmt.setString(1, groupName);
             ResultSet rs = pstmt.executeQuery();

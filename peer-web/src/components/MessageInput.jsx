@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-export default function MessageInput({ onSend, onSendFile, onTyping, disabled, activeChat }) {
+export default function MessageInput({ onSend, onSendFile, disabled, activeChat }) {
   const [text, setText] = useState('');
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
-
+  
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!text.trim() || disabled) return;
@@ -51,7 +50,8 @@ export default function MessageInput({ onSend, onSendFile, onTyping, disabled, a
         : `Message @ ${activeChat.name}...`;
 
   return (
-    <form className="message-input" onSubmit={handleSubmit}>
+    <div className="message-input-wrapper">
+      <form className="message-input" onSubmit={handleSubmit}>
       {activeChat.type !== 'broadcast' && (
         <button
           type="button"
@@ -84,6 +84,7 @@ export default function MessageInput({ onSend, onSendFile, onTyping, disabled, a
       <button type="submit" disabled={disabled || !text.trim()} className="send-btn">
         Send ↵
       </button>
-    </form>
+      </form>
+    </div>
   );
 }

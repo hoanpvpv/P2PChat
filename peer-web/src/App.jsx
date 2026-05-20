@@ -4,7 +4,7 @@ import {
   sendMessage, sendGroupMessage, sendBroadcast,
   createGroup, addToGroup, kickFromGroup, leaveGroup, disbandGroup,
   discoverPeers, connectWebSocket, autoDetectHost, initPeer,
-  getTransfers, offerFile, acceptFile, sendTyping
+  getTransfers, offerFile, acceptFile
 } from './api';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -125,24 +125,7 @@ export default function App() {
           }
           break;
           
-        case 'TYPING':
-          const chatKey = data.groupId || data.sender;
-          if (cur && (chatKey === cur.id || chatKey === cur.name)) {
-            setTypingUsers(prev => {
-              if (prev[data.sender]) clearTimeout(prev[data.sender]);
-              return {
-                ...prev,
-                [data.sender]: setTimeout(() => {
-                  setTypingUsers(current => {
-                    const next = { ...current };
-                    delete next[data.sender];
-                    return next;
-                  });
-                }, 3000)
-              };
-            });
-          }
-          break;
+        
 
         case 'GROUP_JOINED':
           refreshData();
@@ -246,11 +229,7 @@ export default function App() {
     setActiveChat(chat);
     const unreadKey = chat.type === 'broadcast' ? 'broadcast' : (chat.id || chat.name);
     setUnreadCounts(prev => ({ ...prev, [unreadKey]: 0 }));
-    setTypingUsers(prev => {
-      Object.values(prev).forEach(clearTimeout);
-      return {};
-    });
-    loadHistory(chat);
+        loadHistory(chat);
   }, [loadHistory]);
 
   const handleSend = useCallback(async (content) => {
@@ -261,19 +240,19 @@ export default function App() {
         if (result.sent !== false) {
           setMessages(prev => [...prev, {
             sender: info.username, receiver: activeChat.name,
-            content, timestamp: Date.now(), type: 'DIRECT_MESSAGE',
+            content, timestamp: Date.now(), type: 'DIRECT_MESSAGE'
           }]);
         }
       } else if (activeChat.type === 'group') {
         await sendGroupMessage(activeChat.id, content);
         setMessages(prev => [...prev, {
           sender: info.username, groupId: activeChat.id,
-          groupName: activeChat.name, content, timestamp: Date.now(), type: 'GROUP_MESSAGE',
+          groupName: activeChat.name, content, timestamp: Date.now(), type: 'GROUP_MESSAGE'
         }]);
       } else if (activeChat.type === 'broadcast') {
         await sendBroadcast(content);
         setMessages(prev => [...prev, {
-          sender: info.username, content, timestamp: Date.now(), type: 'BROADCAST',
+          sender: info.username, content, timestamp: Date.now(), type: 'BROADCAST'
         }]);
       }
     } catch (e) {
@@ -296,18 +275,7 @@ export default function App() {
     }
   }, [activeChat, showToast]);
 
-  const handleSendTyping = useCallback(async () => {
-    if (!activeChat) return;
-    try {
-      if (activeChat.type === 'peer') {
-        await sendTyping(activeChat.name, null);
-      } else if (activeChat.type === 'group') {
-        await sendTyping(null, activeChat.id);
-      }
-    } catch (e) {
-      // ignore
-    }
-  }, [activeChat]);
+  
 
   const handleAcceptTransfer = useCallback(async (transferId) => {
     try {
@@ -402,7 +370,7 @@ export default function App() {
             </div>
             <div>
               <span className="summary-label">Bootstrap Server</span>
-              <span className="summary-value">localhost:9000</span>
+              <span className="summary-value">localhost:{info.bootstrapPort || 8080}</span>
             </div>
           </div>
 
@@ -508,19 +476,16 @@ export default function App() {
               messagesEndRef={messagesEndRef}
               onDownload={handleAcceptTransfer}
               transfers={transfers}
+              activeChatGroup={activeChatGroup}
+              peers={peers}
             />
 
-            {Object.keys(typingUsers).length > 0 && (
-              <div className="typing-indicator">
-                {Object.keys(typingUsers).join(', ')} {Object.keys(typingUsers).length > 1 ? 'đang soạn tin...' : 'đang soạn tin...'}
-                <span className="typing-dots"><span>.</span><span>.</span><span>.</span></span>
-              </div>
-            )}
+            
 
             <MessageInput
               onSend={handleSend}
               onSendFile={handleSendFile}
-              onTyping={handleSendTyping}
+              
               disabled={activeChat.kicked}
               activeChat={activeChat}
             />

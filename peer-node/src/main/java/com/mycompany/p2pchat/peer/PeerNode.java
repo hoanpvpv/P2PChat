@@ -43,6 +43,7 @@ public class PeerNode {
         // But we can initialize them with a dummy address for now to avoid nulls
         String myAddress = "localhost:" + this.port;
         this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
+        this.peerManager.setCoordinatorManager(this.coordinatorManager);
         this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
         this.peerManager.setLazyRepairManager(lazyRepairManager);
 
@@ -55,9 +56,13 @@ public class PeerNode {
         this.peerManager.getFileTransferManager().setWebServer(webServer);
     }
 
-    public void setConfig(String username, String host, String bootstrap) {
+    public void setConfig(String username, String host, int peerPort, String bootstrap) {
         if (username != null && !username.isEmpty()) this.peerManager.setLocalUsername(username);
         if (host != null && !host.isEmpty()) this.peerManager.setLocalHost(host);
+        if (peerPort > 0) {
+            this.port = peerPort;
+            this.peerManager.setLocalPort(peerPort);
+        }
         if (bootstrap != null && !bootstrap.isEmpty()) {
             String[] parts = bootstrap.split(":");
             this.peerManager.setBootstrapHost(parts[0]);
@@ -99,6 +104,7 @@ public class PeerNode {
 
         this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
         this.coordinatorManager.setWebServer(webServer);
+        this.peerManager.setCoordinatorManager(this.coordinatorManager);
         this.coordinatorManager.start();
 
         this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
@@ -107,6 +113,7 @@ public class PeerNode {
         this.peerServer = new PeerServer(peerPort, peerManager);
         this.peerServer.setWebServer(webServer);
         this.peerServer.setCoordinatorManager(this.coordinatorManager);
+        this.peerManager.setPeerServer(this.peerServer);
         this.peerServer.start();
 
         this.webServer.setCoordinatorManager(this.coordinatorManager);

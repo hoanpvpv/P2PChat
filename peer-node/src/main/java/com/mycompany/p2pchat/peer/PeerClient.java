@@ -110,7 +110,34 @@ public class PeerClient {
 
         List<String> coords = cache.getCoordinators();
         for (String coord : coords) {
-            if (coord.equals(peerManager.getLocalAddress())) continue;
+            if (coord.equals(peerManager.getLocalAddress())) {
+                // Process locally if we are a coordinator
+                if (peerManager.getCoordinatorManager().isManaging(groupId)) {
+                    Message resp = null;
+                    try {
+                        switch (com.mycompany.p2pchat.protocol.MessageType.valueOf(request.getType())) {
+                            case GROUP_ADD -> resp = peerManager.getCoordinatorManager().handleGroupAdd(request);
+                            case GROUP_KICK -> resp = peerManager.getCoordinatorManager().handleGroupKick(request);
+                            case GROUP_LEAVE -> resp = peerManager.getCoordinatorManager().handleGroupLeave(request);
+                            case GROUP_DISBAND -> {
+                                peerManager.getCoordinatorManager().handleGroupDisband(request);
+                                resp = Message.builder().type(com.mycompany.p2pchat.protocol.MessageType.GROUP_DISBANDED.name()).build();
+                            }
+                        }
+                        if (resp != null) {
+                            // Synthesize GROUP_UPDATED processing locally to generate SYSTEM messages
+                            if (com.mycompany.p2pchat.protocol.MessageType.GROUP_UPDATED.name().equals(resp.getType())) {
+                                // Simulate receiving GROUP_UPDATED so PeerServer generates WS and SYSTEM message
+                                peerManager.getPeerServer().processMessageFromLocal(resp);
+                            }
+                            return resp;
+                        }
+                    } catch (Exception e) {
+                        logger.warning("Error processing locally: " + e.getMessage());
+                    }
+                }
+                continue;
+            }
             String[] parts = coord.split(":");
             if (parts.length != 2) continue;
             try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {

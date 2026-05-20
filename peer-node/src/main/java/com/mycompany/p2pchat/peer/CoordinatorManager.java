@@ -174,10 +174,9 @@ public class CoordinatorManager {
             return createError("Group not found: " + groupId);
         }
 
-        // Check idempotency
         if (msg.getRequestId() != null && processedRequestIds.contains(msg.getRequestId())) {
             logger.info("Duplicate request " + msg.getRequestId() + " — returning existing result");
-            return createGroupUpdatedMessage(group);
+            return createGroupUpdatedMessage(group, null, null);
         }
 
         // Check permissions (OPEN vs RESTRICTED)
@@ -212,17 +211,18 @@ public class CoordinatorManager {
         // Recalculate coordinators
         List<String> newCoords = HRWHash.topK(group.getMembers(), groupId, Constants.COORDINATOR_K);
 
+        // FIX #1: Send GROUP_JOINED to new member FIRST (before GROUP_UPDATED)
+        // so that when GROUP_UPDATED arrives, the new member already has the group in cache.
+        sendGroupJoined(newMember, group, newCoords);
+
         // Gossip immediately to other coordinators
         gossipImmediate(group);
 
-        // Notify all members
+        // Notify all existing members (excluding new member who already got GROUP_JOINED)
         broadcastGroupUpdated(group, "ADD", newMember);
 
-        // Send GROUP_JOINED to new member
-        sendGroupJoined(newMember, group, newCoords);
-
         logger.info("Added " + newMember + " to group " + groupId + " v=" + group.getVersion());
-        return createGroupUpdatedMessage(group);
+        return createGroupUpdatedMessage(group, "ADD", newMember);
     }
 
     /**
@@ -254,7 +254,7 @@ public class CoordinatorManager {
         sendGroupKicked(target, groupId);
 
         logger.info("Kicked " + target + " from group " + groupId);
-        return createGroupUpdatedMessage(group);
+        return createGroupUpdatedMessage(group, "KICK", target);
     }
 
     /**
@@ -280,6 +280,12 @@ public class CoordinatorManager {
                 group.getMembers().remove(newOwner);
                 group.getMembers().add(0, newOwner);
             }
+            group.removeMember(leaver);
+            group.incrementVersion();
+            gossipImmediate(group);
+            broadcastGroupUpdated(group, "OWNER_LEAVE", leaver);
+            logger.info("Owner " + leaver + " left, passed owner to " + newOwner);
+            return createGroupUpdatedMessage(group, "OWNER_LEAVE", leaver);
         }
 
         group.removeMember(leaver);
@@ -295,7 +301,7 @@ public class CoordinatorManager {
         }
 
         logger.info(leaver + " left group " + groupId);
-        return createGroupUpdatedMessage(group);
+        return createGroupUpdatedMessage(group, "LEAVE", leaver);
     }
 
     /**
@@ -418,22 +424,40 @@ public class CoordinatorManager {
     }
 
     private void sendGroupJoined(String newMember, GroupInfo group, List<String> coordinators) {
-        try {
-            Message joined = Message.builder()
-                    .type(MessageType.GROUP_JOINED.name())
-                    .messageId(ProtocolHandler.generateMessageId())
-                    .sender(myAddress)
-                    .groupId(group.getGroupId())
-                    .groupName(group.getGroupName())
-                    .members(new ArrayList<>(group.getMembers()))
-                    .coordinators(coordinators)
-                    .version(group.getVersion())
-                    .groupMode(group.getGroupMode())
-                    .timestamp(System.currentTimeMillis())
-                    .build();
-            sendTcpMessage(newMember, joined);
-        } catch (Exception e) {
-            logger.warning("Failed to send GROUP_JOINED to " + newMember + ": " + e.getMessage());
+        Message joined = Message.builder()
+                .type(MessageType.GROUP_JOINED.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(myAddress)
+                .groupId(group.getGroupId())
+                .groupName(group.getGroupName())
+                .members(new ArrayList<>(group.getMembers()))
+                .coordinators(coordinators)
+                .version(group.getVersion())
+                .groupMode(group.getGroupMode())
+                .chatHistory(peerManager.getMessageRepository().getGroupHistory(group.getGroupId()))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        // FIX #2: Retry up to 3 times so transient TCP failures don't silently drop GROUP_JOINED
+        boolean delivered = false;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                sendTcpMessage(newMember, joined);
+                delivered = true;
+                logger.info("GROUP_JOINED delivered to " + newMember + " on attempt " + attempt);
+                break;
+            } catch (Exception e) {
+                logger.warning("GROUP_JOINED attempt " + attempt + "/3 failed for " + newMember + ": " + e.getMessage());
+                if (attempt < 3) {
+                    try { Thread.sleep(300L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
+            }
+        }
+        if (!delivered) {
+            // FIX #4: Fallback — gossip will eventually propagate the updated GroupInfo
+            // (M4 will pick it up via COORD_GOSSIP → handleCoordGossip → updateFromGroupInfo)
+            logger.warning("GROUP_JOINED could not be delivered to " + newMember
+                    + " after 3 attempts. Gossip will eventually sync the state.");
         }
     }
 
@@ -452,17 +476,20 @@ public class CoordinatorManager {
         }
     }
 
-    private Message createGroupUpdatedMessage(GroupInfo group) {
+    private Message createGroupUpdatedMessage(GroupInfo group, String changeType, String affected) {
         List<String> coords = HRWHash.topK(group.getMembers(), group.getGroupId(), Constants.COORDINATOR_K);
         return Message.builder()
                 .type(MessageType.GROUP_UPDATED.name())
                 .messageId(ProtocolHandler.generateMessageId())
                 .sender(myAddress)
                 .groupId(group.getGroupId())
+                .groupName(group.getGroupName())
                 .members(new ArrayList<>(group.getMembers()))
                 .coordinators(coords)
                 .version(group.getVersion())
                 .groupMode(group.getGroupMode())
+                .changeType(changeType)
+                .affected(affected)
                 .build();
     }
 
@@ -478,7 +505,7 @@ public class CoordinatorManager {
     private void sendTcpMessage(String address, Message msg) {
         String[] parts = address.split(":");
         if (parts.length != 2) {
-            logger.warning("Invalid address: " + address);
+            logger.warning("Invalid address format (expected host:port): " + address);
             return;
         }
         String host = parts[0];
@@ -490,7 +517,10 @@ public class CoordinatorManager {
             out.println(JsonUtil.toJson(msg));
             out.flush();
         } catch (Exception e) {
-            logger.fine("TCP send to " + address + " failed: " + e.getMessage());
+            // FIX #3: Upgrade from FINE (silent) to WARNING so failures are visible in logs
+            logger.warning("TCP send [" + msg.getType() + "] to " + address + " failed: " + e.getMessage());
+            // Re-throw so callers (e.g. sendGroupJoined retry loop) can catch it
+            throw new RuntimeException("TCP send failed to " + address, e);
         }
     }
 

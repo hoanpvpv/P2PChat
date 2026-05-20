@@ -78,6 +78,10 @@ public class PeerServer {
         }
     }
 
+    public void processMessageFromLocal(Message msg) {
+        processMessage(msg, null);
+    }
+
     private void processMessage(Message msg, Socket socket) {
         String type = msg.getType();
         logger.fine("Received [" + type + "] from " + msg.getSender());
@@ -233,8 +237,17 @@ public class PeerServer {
     private void handleCoordInit(Message msg, Socket socket) {
         GroupInfo info = msg.getGroupInfo();
         if (info == null) return;
-        // This peer is now a coordinator for this group
+
+        // DEDUP: If we already manage this group at equal or higher version,
+        // ignore the duplicate COORD_INIT (race between C1 and C3 both promoting us).
         if (coordinatorManager != null) {
+            GroupInfo existing = coordinatorManager.getManagedGroup(info.getGroupId());
+            if (existing != null && existing.getVersion() >= info.getVersion()) {
+                logger.info("COORD_INIT dedup: already managing " + info.getGroupId()
+                        + " v=" + existing.getVersion() + ", ignoring v=" + info.getVersion());
+                sendRawAck(socket, msg.getMessageId(), "COORD_INIT_ACK");
+                return;
+            }
             coordinatorManager.manageGroup(info);
         }
         peerManager.getGroupCache().updateFromGroupInfo(info);
@@ -273,7 +286,16 @@ public class PeerServer {
         Message response = coordinatorManager.handleGroupAdd(msg);
         sendResponse(socket, response);
         if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
-            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+            // FIX: Sync GroupCache from managedGroups so handleGroupUpdated can find the entry.
+            // Without this, when duc (C3) handles GROUP_ADD itself, its own GroupCache
+            // is never updated and the system message ("peer-X đã tham gia nhóm") is never shown.
+            GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
+            if (managed != null) {
+                peerManager.getGroupCache().updateFromGroupInfo(managed);
+            }
+            // Route through processMessageFromLocal so handleGroupUpdated() is invoked.
+            // This synthesizes the system chat message AND calls broadcastWs(GROUP_UPDATED).
+            processMessageFromLocal(response);
         }
     }
 
@@ -285,7 +307,12 @@ public class PeerServer {
         Message response = coordinatorManager.handleGroupKick(msg);
         sendResponse(socket, response);
         if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
-            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+            // FIX: Same as handleGroupAdd — sync GroupCache then route through full pipeline.
+            GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
+            if (managed != null) {
+                peerManager.getGroupCache().updateFromGroupInfo(managed);
+            }
+            processMessageFromLocal(response);
         }
     }
 
@@ -297,7 +324,15 @@ public class PeerServer {
         Message response = coordinatorManager.handleGroupLeave(msg);
         sendResponse(socket, response);
         if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
-            broadcastWs("GROUP_UPDATED", messageToMapFull(response));
+            // FIX: Same as handleGroupAdd — sync GroupCache then route through full pipeline.
+            // Note: if the leaver was duc itself, GroupCache.remove() is handled by
+            // handleGroupUpdated via the LEAVE changeType path on the remote side;
+            // locally, CoordinatorManager.handleGroupLeave() calls unmanageGroup() if needed.
+            GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
+            if (managed != null) {
+                peerManager.getGroupCache().updateFromGroupInfo(managed);
+            }
+            processMessageFromLocal(response);
         }
     }
 
@@ -320,6 +355,13 @@ public class PeerServer {
         info.setGroupMode(msg.getGroupMode() != null ? msg.getGroupMode() : "OPEN");
         peerManager.getGroupCache().updateFromGroupInfo(info);
         logger.info("Joined group: " + msg.getGroupId() + " (" + msg.getGroupName() + ")");
+
+        if (msg.getChatHistory() != null) {
+            for (Message histMsg : msg.getChatHistory()) {
+                peerManager.getMessageRepository().saveMessage(histMsg);
+            }
+        }
+
         broadcastWs("GROUP_JOINED", groupInfoToMap(info, null, null));
     }
 
@@ -331,6 +373,19 @@ public class PeerServer {
         if (msg.getVersion() > 0) entry.setLocalVersion(msg.getVersion());
         if (msg.getGroupMode() != null) entry.setGroupMode(msg.getGroupMode());
         entry.setLastUpdated(System.currentTimeMillis());
+
+        // FIX #5: If this peer is a coordinator for this group, sync the control-plane
+        // managedGroups so it doesn't diverge from the data-plane GroupCache.
+        if (coordinatorManager != null && coordinatorManager.isManaging(msg.getGroupId())) {
+            GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
+            if (managed != null && msg.getVersion() > managed.getVersion()) {
+                if (msg.getMembers() != null) managed.setMembers(new ArrayList<>(msg.getMembers()));
+                managed.setVersion(msg.getVersion());
+                if (msg.getGroupMode() != null) managed.setGroupMode(msg.getGroupMode());
+                logger.info("CoordinatorManager synced from GROUP_UPDATED for " + msg.getGroupId()
+                        + " v=" + msg.getVersion());
+            }
+        }
 
         String change = msg.getChangeType();
         String affected = msg.getAffected();

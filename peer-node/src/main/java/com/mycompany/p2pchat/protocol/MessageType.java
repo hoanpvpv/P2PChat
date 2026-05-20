@@ -20,6 +20,7 @@ public enum MessageType {
     BROADCAST,
     TYPING,
     ACK,
+    SYSTEM,
 
     // DHT-lite Coordinator protocol (Control Plane)
     COORD_INIT,

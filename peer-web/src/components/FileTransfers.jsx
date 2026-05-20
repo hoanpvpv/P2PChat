@@ -9,7 +9,7 @@ export default function FileTransfers({ transfers, currentChat, username, showTo
     if (t.status === 'PENDING') return false; // Hide pending, they are shown in ChatArea
     if (currentChat.type === 'peer') {
       return (t.sender.includes(currentChat.name) && t.receiver.includes(username)) ||
-             (t.sender.includes(username) && t.receiver.includes(currentChat.name));
+        (t.sender.includes(username) && t.receiver.includes(currentChat.name));
     } else if (currentChat.type === 'group') {
       return t.groupId === currentChat.id;
     }

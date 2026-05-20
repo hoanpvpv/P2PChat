@@ -138,18 +138,7 @@ export async function sendGroupMessage(groupId, content) {
   return res.json();
 }
 
-export async function sendTyping(receiver, groupId) {
-  const body = {};
-  if (receiver) body.receiver = receiver;
-  if (groupId) body.groupId = groupId;
-  
-  const res = await fetch(`${API_BASE}/typing`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return res.json();
-}
+
 // ── File Transfer ─────────────────────────────────────────────
 export async function getTransfers() {
   const res = await fetch(`${API_BASE}/file/transfers`);

@@ -70,6 +70,18 @@
 
 ---
 
+## Phiên 5: Cải thiện trải nghiệm UI/UX và đồng bộ nhóm (11/05/2026)
+
+### Việc đã hoàn thành
+
+- Đồng bộ đầy đủ dữ liệu nhóm (thông tin + lịch sử chat) khi thêm member mới, đảm bảo member mới thấy tin nhắn hệ thống báo hiệu lúc mới tạo nhóm
+- Thêm tin nhắn SYSTEM để thông báo mỗi khi group được tạo thành công
+- Cập nhật giao diện:
+  - Bỏ text-align center cho broadcast message để hiển thị tự nhiên hơn giống tin nhắn chat thông thường
+  - Khắc phục lỗi network khiến các máy trạm không hiển thị thống nhất số lượng nhóm và thành viên nhóm
+
+---
+
 ## Trạng thái hiện tại
 
 ### Hoạt động tốt

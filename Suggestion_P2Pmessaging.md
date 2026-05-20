@@ -2,15 +2,17 @@
 
 > **Đánh giá nhanh trạng thái hiện tại:**  
 > ✅ Chat trực tiếp (DIRECT_MESSAGE + ACK + retry 3 lần)  
-> ⚠️ Chat nhóm (GROUP_MESSAGE gửi được, nhưng group state chỉ lưu local — xem mục 1)  
+> ✅ Chat nhóm (GROUP_MESSAGE gửi trực tiếp P2P dựa trên danh sách thành viên trong groupCache)  
+> ✅ Đồng bộ trạng thái nhóm phân tán (DHT-lite Coordinator Model qua Rendezvous Hashing - HRW)  
+> ✅ Đồng bộ logic Control/Data/Repair plane cho Chat nhóm  
+> ✅ Truyền tải File 1-1 & Nhóm (Mô hình pull trực tiếp, chunk checkpoint, resume và xác thực SHA-256)  
 > ✅ Broadcast toàn mạng  
 > ✅ Heartbeat + dead peer detection  
 > ✅ Offline message store-and-forward  
-> ✅ SQLite lưu lịch sử tin nhắn  
+> ✅ SQLite lưu lịch sử tin nhắn và trạng thái file transfers  
 > ✅ Web UI React + REST + WebSocket realtime  
 > ✅ Bootstrap Dashboard  
-> ❌ File Transfer  
-> ❌ Group state đồng bộ giữa các peer  
+> ❌ P2P Swarming trong truyền file Nhóm (Mới định nghĩa các message types, chưa triển khai swarming logic thực tế)  
 > ❌ Typing indicator / read receipt  
 
 ---
@@ -361,18 +363,20 @@ Peer → C1 (hoặc C2 nếu C1 offline): GROUP_ADD { groupId, requester, newMem
 C1 xử lý:
   1. Thêm eve vào members[]
   2. version++
-  3. Tính lại HRW với members mới:
+  3. Kiểm tra idempotency (requestId) — nếu đã xử lý request trùng → trả kết quả cũ, không tăng version lần 2
+  4. Tính lại HRW với members mới:
        → Nếu eve score > C3 hiện tại: eve trở thành C3, C3 cũ xuống member thường
          - Gửi COORD_INIT { GroupInfo } đến eve (nếu online)
          - Gửi COORD_RESIGN { groupId } đến C3 cũ
        → Nếu không thay đổi coordinator: tiếp tục bình thường
-  4. Gossip GroupInfo mới đến C2, C3 ngay lập tức
-  5. Gửi GROUP_UPDATED { groupId, members[], coordinators[], version } đến TẤT CẢ member đang online
-  6. Gửi GROUP_JOINED đến Eve:
-       Eve ONLINE  → gửi TCP trực tiếp ngay
-       Eve OFFLINE → lưu vào Bootstrap offline store (tương tự offline 1-1)
-                     → khi Eve online lại: Bootstrap deliver GROUP_JOINED
-                     → Eve fetch GroupInfo từ coordinator và join bình thường
+  5. Gửi GROUP_JOINED đến Eve TRƯỚC (retry 3 lần nếu fail):
+       → Tại sao phải gửi trước? Nếu GROUP_UPDATED đến Eve trước GROUP_JOINED,
+         Eve chưa có group trong cache → bỏ qua GROUP_UPDATED → mất đồng bộ.
+       → Nếu cả 3 lần retry đều fail? Gossip sẽ tự lan truyền GroupInfo mới tới Eve
+         thông qua các Coordinator khác (eventual consistency).
+  6. Gossip GroupInfo mới đến C2, C3 ngay lập tức
+  7. Gửi GROUP_UPDATED { groupId, members[], coordinators[], version } đến TẤT CẢ member đang online
+       (trừ Eve — Eve đã nhận GROUP_JOINED ở bước 5)
    ↓
 Mỗi member cập nhật local cache; Eve (khi online) bắt đầu nhận tin nhóm
 ```
@@ -527,6 +531,17 @@ C1 gửi GROUP_UPDATED { changeType:"COORD_CHANGE" } đến tất cả member
 ```
 
 > **Lưu ý:** Chỉ promote peer **đang online** (reachable qua TCP). Nếu cả rank 4, 5 đều offline → tạm thời chạy với 2 coordinator, đợi member online rồi promote sau.
+
+> **Chống duplicate COORD_INIT (Race condition):**
+> Khi C1 và C3 cùng phát hiện C2 chết, cả hai đều gửi `COORD_INIT` đến Bob (rank 4). Nếu không có dedup, Bob nhận 2 lần `COORD_INIT` cho cùng group → có thể lệch state hoặc gossip chồng chéo.
+>
+> | Giải pháp | Không có dedup | Có version-based dedup (hiện tại) |
+> |---|---|---|
+> | Bob nhận COORD_INIT lần 1 (v=9) | Chấp nhận, khởi động Coordinator | Chấp nhận, lưu v=9 |
+> | Bob nhận COORD_INIT lần 2 (v=9) | Chấp nhận LẦN NỮA, state bị reset | So sánh v=9 >= v=9 → **bỏ qua**, ACK bình thường |
+> | Kết quả | Coordinator khởi tạo 2 lần, gossip chồng chéo | Coordinator chỉ khởi tạo 1 lần, an toàn |
+>
+> **Cách hoạt động:** Peer nhận `COORD_INIT` kiểm tra `existing.getVersion() >= incoming.getVersion()`. Nếu đã manage group ở version bằng hoặc cao hơn → bỏ qua, chỉ gửi ACK. Không cần epoch phức tạp — version number từ Lamport clock đủ để phân biệt.
 
 **Dave online lại sau:**
 ```
@@ -712,91 +727,121 @@ RESTRICTED group (owner bật khi tạo hoặc chuyển đổi sau):
 
 ---
 
-## 2. File Transfer (1-1)
+## 2. File Transfer (Truyền tải File 1-1 & Nhóm)
 
-### 2.1. Giới hạn kích thước file
+Hệ thống P2PChat đã triển khai hoàn thiện cơ chế truyền tải File trực tiếp giữa các Peer (Peer-to-Peer) cho cả hội thoại cá nhân (1-1) và hội thoại nhóm (Group). Cơ chế hoạt động dựa trên mô hình **Pull Model** kết hợp với **Chunk-level Checkpointing** để hỗ trợ tạm dừng/khôi phục (resume) khi gặp sự cố đường truyền.
 
-| Chế độ | Kích thước tối đa | Cách cấu hình |
-|---|---|---|
-| **Mặc định** | **100 MB** | Không cần cấu hình |
-| CLI flag | tuỳ chỉnh | `--max-file-size=<MB>` khi khởi động peer |
-| Config file | tuỳ chỉnh | `peer.config` → `maxFileSizeMB=200` |
-| REST API | tuỳ chỉnh runtime | `POST /api/settings { maxFileSizeMB: 300 }` |
-| Không hỗ trợ | > 500 MB | TCP socket thuần không phù hợp |
+---
 
-**Phía client (UI):** Kiểm tra size trước khi gửi request, hiển thị giới hạn hiện tại và cho phép thay đổi trong Settings panel. Giá trị được persist vào SQLite bảng `settings`.
+### 2.1. Giới hạn & Cấu hình kích thước file
+* **Mặc định:** Giới hạn tối đa là **100 MB** (`Constants.MAX_FILE_SIZE = 104857600L`).
+* **Đơn vị phân mảnh (Chunk size):** File được chia thành các mảnh cố định kích thước **64 KB** (`Constants.FILE_CHUNK_SIZE = 65536`).
+* **Quản lý dữ liệu:** Metadata được lưu vào cơ sở dữ liệu SQLite tại các bảng `file_transfers` và `file_chunks`, dữ liệu nhị phân của file tải xuống được lưu trong thư mục `data/downloads/`.
 
-### 2.2. Kiến trúc File Transfer 1-1
+---
 
-```
-Sender Peer                                 Receiver Peer
-    |--- FILE_OFFER {filename, size, sha256, filePort} ---->|
-    |<-- FILE_ACCEPT / FILE_REJECT --------------------------|
-    |<-- [Receiver kết nối vào filePort của Sender] --------|
-    |    [phục vụ binary chunks 64KB]                       |
-    |--- FILE_DONE ----------------------------------------->|
-    |<-- FILE_ACK (sha256 verify result) -------------------|
-```
+### 2.2. Giao thức nhị phân Chunk-level (ChunkTransferProtocol)
+Để truyền dữ liệu file một cách tối ưu và tránh overhead của JSON/Text protocol, luồng dữ liệu file sử dụng socket TCP nhị phân thuần:
 
-Dùng **Pull Model** (giống group): Receiver chủ động kết nối vào `filePort` của Sender.
+1. **Request Frame (Client -> Server):**
+   * `[4 bytes integer]` : Độ dài của chuỗi `transferId` (mã UTF-8).
+   * `[N bytes bytes]`   : Giá trị chuỗi `transferId`.
+   * `[4 bytes integer]` : Chỉ số chunk cần tải (`chunkIndex`, bắt đầu từ `0`).
 
-### 2.3. MessageType File Transfer 1-1
+2. **Response Frame (Server -> Client):**
+   * `[4 bytes integer]` : Trạng thái phản hồi (`0 = OK`, `1 = NOT_FOUND`, `2 = ERROR`).
+   * `[4 bytes integer]` : Độ dài dữ liệu chunk nhị phân (chỉ có khi trạng thái là `0 = OK`).
+   * `[M bytes bytes]`   : Dữ liệu nhị phân thực tế của chunk (thường là 64KB, mảnh cuối có thể nhỏ hơn).
 
-| Type | Hướng | Nội dung |
-|---|---|---|
-| `FILE_OFFER` | Peer → Peer | `{filename, size, sha256, filePort}` |
-| `FILE_ACCEPT` | Peer → Peer | `{transferId}` |
-| `FILE_REJECT` | Peer → Peer | `{reason}` |
-| `FILE_DONE` | Sender → Receiver | `{transferId}` |
-| `FILE_ACK` | Receiver → Sender | `{ok, error?}` |
+---
 
-### 2.4. Thay đổi Backend
-
-**Thêm class:**
-- `FileTransferServer.java` — lắng nghe kết nối download (port = peerPort + 1000)
-- `FileTransferClient.java` — kết nối vào FileTransferServer của peer kia để tải
-- `FileTransferManager.java` — quản lý transfers đang chạy (ConcurrentHashMap)
-
-**Sửa hiện tại:**
-- `WebServer.java` — thêm `POST /api/file/send`, `GET /api/file/transfers`, `POST /api/file/accept/{id}`
-- SQLite — bảng `file_transfers` riêng, không sửa bảng `messages`
-
-**Constants cần thêm:**
-```
-FILE_PORT_OFFSET      = 1000       // filePort = peerPort + 1000
-FILE_CHUNK_SIZE       = 65536      // 64 KB
-MAX_FILE_SIZE         = 104857600  // 100 MB
-FILE_TRANSFER_TIMEOUT = 30000      // 30s timeout per chunk
-```
-
-### 2.5. WebSocket events mới
-
-| Event | Dữ liệu |
-|---|---|
-| `FILE_OFFER` | `{transferId, sender, filename, size}` |
-| `FILE_PROGRESS` | `{transferId, bytesReceived, totalBytes, percent}` |
-| `FILE_DONE` | `{transferId, filename, savedPath, ok}` |
-| `FILE_ERROR` | `{transferId, error}` |
-
-### 2.6. File Resume — Chunk-level Checkpointing
-
-**Lý do:** Nếu chỉ lưu offset byte thì khi resume, dữ liệu từ offset đó trở đi có thể bị corrupt nếu chunk cuối gửi dở. Cần checkpoint ở **biên chunk**, không phải byte tùy ý — đảm bảo dữ liệu trước điểm resume luôn nguyên vẹn.
+### 2.3. Quy trình Truyền File Cá nhân 1-1 (Direct File Transfer)
 
 ```
-Mỗi chunk = 64KB, đánh số chunk_index = 0, 1, 2, ...
-
-Receiver lưu vào SQLite:
-  transfer_id | chunk_index | sha256_chunk | status (OK/PARTIAL)
-  
-Khi resume:
-  Receiver → Sender: FILE_RESUME { transferId, resumeChunkIndex: 47 }
-  Sender bắt đầu gửi từ chunk 47 (bỏ qua 0–46)
-  
-  resumeChunkIndex = số chunk đã verify SHA-256 thành công cuối cùng + 1
-  → chunk 46 đã OK, chunk 47 chưa hoàn thành → gửi lại từ 47
+Sender (Alice)                                    Receiver (Bob)
+  |                                                     |
+  |-- (1) API: /api/file/offer ------------------------>|
+  |   (Khởi động FileTransferServer tại filePort)       |
+  |                                                     |
+  |-- (2) TCP: FILE_OFFER ----------------------------->|
+  |   {transferId, filename, fileSize, sha256,          |
+  |    filePort = peerPort + 1000, totalChunks}         |
+  |                                                     |
+  |                               (Lưu DB file_transfers|
+  |                                WebSocket báo UI)    |
+  |                                                     |
+  |                               (3) API: /api/file/accept/
+  |                               Tìm chunk thiếu       |
+  |                               đầu tiên từ DB        |
+  |                                                     |
+  |<-- (4) TCP: FILE_ACCEPT {transferId, resumeIdx} ----|
+  |                                                     |
+  |                               (Start download task  |
+  |                                song song các chunk) |
+  |                                                     |
+  |<-- (5) TCP (filePort): Chunk Request [chunkIndex] --|
+  |-- (6) TCP (filePort): Chunk Response --------------->|
+  |   [STATUS_OK, size, binary_data]                    |
+  |                                                     |
+  |                               (Xác thực SHA-256 chunk
+  |                                Ghi file ở offset đúng
+  |                                Lưu DB file_chunks)   |
+  |                                                     |
+  |                               (Đạt 100% -> check SHA)
+  |                                                     |
+  |<-- (7) TCP: FILE_DONE {transferId} -----------------|
 ```
 
-> Không bao giờ resume giữa chunk — chỉ resume từ đầu chunk tiếp theo sau chunk cuối cùng đã verify thành công. Dữ liệu trước đó an toàn, không bị corrupt nửa sau.
+#### Chi tiết các bước thực hiện:
+1. **Khởi tạo Offer:** Người gửi (Alice) tải file qua API REST. `FileTransferManager` sinh `transferId` (UUID) và tính toán số lượng chunk. Đồng thời, `FileTransferServer` (chạy song song tại port `peerPort + 1000`) đăng ký phục vụ file này. Alice gửi bản tin điều khiển `FILE_OFFER` chứa metadata đến Bob qua cổng TCP chính.
+2. **Xác nhận Acceptance:** Khi Bob bấm "Chấp nhận" trên giao diện React Web UI, backend của Bob sẽ gọi API chấp nhận. Hệ thống kiểm tra trong SQLite xem file này trước đó đã được tải một phần nào chưa thông qua `FileTransferRepository.firstMissingChunk`. Vị trí chunk bị thiếu đầu tiên (`resumeChunkIndex`) sẽ được gửi ngược lại cho Alice qua bản tin `FILE_ACCEPT`.
+3. **Truyền tải và Ghi dữ liệu:** Client của Bob bắt đầu một tiến trình kết nối trực tiếp đến cổng `filePort` của Alice. Bob tuần tự kéo các chunk thông qua `ChunkTransferProtocol`.
+   * Mỗi chunk nhận về được hash SHA-256 để so sánh tính toàn vẹn (tính năng bảo mật).
+   * Chunk hợp lệ được ghi trực tiếp vào đúng file trên ổ đĩa tại vị trí offset: `chunkIndex * 64KB`.
+   * Trạng thái chunk được ghi nhận vào bảng `file_chunks` và cập nhật tiến trình vào bảng `file_transfers`.
+4. **Kết thúc và Kiểm tra:** Khi tải đủ 100% các mảnh, Bob tính toán lại toàn bộ mã SHA-256 của file tải về và đối chiếu với mã SHA-256 trong `FILE_OFFER` gốc. Nếu khớp, trạng thái chuyển thành `DONE` và Bob gửi `FILE_DONE` đến Alice để kết thúc phiên truyền tải.
+
+---
+
+### 2.4. Quy trình Truyền File Nhóm (Group File Transfer)
+
+Hiện tại, cơ chế truyền file nhóm được thiết kế tối giản hóa và vận hành trực tiếp trên luồng P2P Data Plane mà không cần sự can thiệp của Coordinator (Coordinator chỉ quản lý Membership/Control Plane).
+
+```
+Group Sender (Alice)          Member (Bob)           Member (Carol)
+        |                          |                       |
+        |-- (1) API: offer file ---|                       |
+        |   (groupId chỉ định)     |                       |
+        |                          |                       |
+        |-- (2) TCP: FILE_OFFER -->|                       |
+        |   {..., groupId}         |                       |
+        |--------------------------|---------------------->|
+        |                          |   (FILE_OFFER)        |
+        |                          |                       |
+        |                          |-- (3) Click accept -->|
+        |                          |   Tải từ Alice        |
+        |<-- (4) TCP (filePort): Chunk Requests -----------|
+        |-- (5) TCP (filePort): Chunk Responses ---------->|
+        |                                                  |
+        |                                                  |-- (3) Click accept
+        |                                                  |   Tải từ Alice
+        |<-- (4) TCP (filePort): Chunk Requests -----------|
+        |-- (5) TCP (filePort): Chunk Responses ---------->|
+```
+
+#### Cơ chế vận hành thực tế:
+1. **Phân phối Offer (Multicast):** Thay vì gửi cho 1 người, khi Alice chia sẻ file vào nhóm, `FileTransferManager` sẽ đọc `GroupCache` local để lấy danh sách toàn bộ thành viên đang online trong nhóm. Alice thực hiện gửi bản tin điều khiển `FILE_OFFER` (chứa thêm trường `groupId`) tới từng thành viên đó thông qua kết nối TCP.
+2. **Hiển thị giao diện:** Mỗi thành viên nhận được `FILE_OFFER` sẽ tự động ghi nhận vào SQLite local và hiển thị bong bóng thông báo file trong khung chat nhóm của mình.
+3. **Tải file song song (Direct Multi-Pull):** Mỗi thành viên khi bấm nhận file sẽ chủ động khởi tạo tiến trình `FileTransferClient` của riêng họ, kết nối trực tiếp đến cổng `filePort` của Alice và kéo dữ liệu.
+4. **So sánh với đề xuất Swarming (BitTorrent-like):**
+   * *Hiện tại:* Các thành viên trong nhóm đều kéo trực tiếp các chunk từ một nguồn duy nhất là Alice (Sender).
+   * *Đề xuất Swarming (Tương lai):* Các thành viên đã hoàn thành tải một số chunk có thể broadcast trạng thái `FILE_HAVE` cho nhóm, từ đó các thành viên khác có thể chia nhau tải chéo các chunk từ nhau (Ví dụ: Carol tải chunk 0-50 từ Alice, chunk 51-100 từ Bob đã tải xong trước đó), giúp tối ưu hóa băng thông upload của Alice. Các message types `FILE_HAVE`, `FILE_HAVE_REQ`, `FILE_HAVE_RESP` đã được thiết kế sẵn trong enum hệ thống để chuẩn bị cho nâng cấp này.
+
+---
+
+### 2.5. Cơ chế Khôi phục tải lỗi (File Resume & Checkpointing)
+* **Checkpoint tại biên Chunk (Chunk Boundary):** Để tránh hỏng dữ liệu khi mất mạng đột ngột, hệ thống không lưu trữ tiến trình theo dung lượng byte ngẫu nhiên mà lưu theo chỉ số mảnh (`chunk_index`). Dữ liệu chỉ được đánh dấu thành công (`DONE`) trong SQLite sau khi đã ghi thành công mảnh 64KB hoàn chỉnh lên đĩa và kiểm tra SHA-256 của mảnh đó khớp.
+* **Tự động tiếp tục khi kết nối lại:** Khi người dùng bấm nhận lại một file đang tải dở hoặc khởi động lại ứng dụng, Client sẽ gửi yêu cầu khôi phục kèm tham số `resumeChunkIndex = firstMissingChunk()`. File socket phía Sender sẽ tự động dịch chuyển con trỏ đọc (`RandomAccessFile.seek`) tới vị trí byte tương ứng và tiếp tục đẩy các mảnh tiếp theo mà không cần gửi lại từ đầu file.
 
 ---
 
@@ -916,3 +961,67 @@ Mục **"# Broadcast"** cố định trong Sidebar. Click → chế độ broadc
 - **SQLite schema messages:** Thêm bảng `file_transfers` riêng.
 - **Color theme & layout:** Giữ nguyên, chỉ thêm CSS classes mới.
 - **Churn test script:** Không cần thay đổi.
+
+ 
+ 
+## 8. Quản lý lưu trữ và Đảm bảo tính toàn vẹn (Persistence & Retention)
+
+Trong hệ thống P2PChat, việc lưu trữ tin nhắn và file được phân chia rõ ràng để đảm bảo hiệu năng và không phụ thuộc vào một máy chủ trung tâm nào. Tất cả dữ liệu đều được lưu trữ hoàn toàn tại máy của từng người dùng (Local Storage), cụ thể:
+
+### 8.1. Tin nhắn cá nhân (Direct Messages) & Tin nhắn Broadcast
+- **Lưu trữ cục bộ:** Mọi tin nhắn (gửi đi và nhận về) đều được lưu vào cơ sở dữ liệu SQLite tại máy người dùng (bảng messages). 
+- **Đảm bảo nhận tin khi Offline (Store-and-forward):** Nếu người nhận đang offline, tin nhắn sẽ được gửi tạm vào **Offline Store** trên Bootstrap Server. Ngay khi người nhận online trở lại, Bootstrap sẽ đẩy (deliver) các tin nhắn này về, và máy người nhận sẽ lập tức lưu vào SQLite. Cơ chế này đảm bảo không mất tin nhắn cá nhân dù 2 bên không online cùng lúc.
+
+### 8.2. Tin nhắn Nhóm (Group Messages)
+- **Lưu trữ phân tán P2P:** Tin nhắn nhóm cũng được lưu trực tiếp vào bảng messages (với trường groupId hoặc groupName) trên SQLite của từng thành viên trong nhóm nhận được tin đó.
+- **Đồng bộ hóa trạng thái nhóm (Group State Resync):** Cơ chế `GROUP_RESYNC_REQ / GROUP_RESYNC_RESP` chỉ đồng bộ **trạng thái thành viên** (membership, version, owner, coordinators) — **không đồng bộ lịch sử tin nhắn**. Lý do:
+
+  | Tiêu chí | Resync membership (hiện tại) | Resync cả message history |
+  |---|---|---|
+  | **Dung lượng** | Rất nhỏ (~1KB GroupInfo) | Có thể rất lớn (hàng trăm tin nhắn) |
+  | **Phức tạp** | Chỉ cần so sánh version number | Cần tracking lastSeenMessageId, pagination, dedup |
+  | **Coordinator tải** | Không đáng kể | Phải cache + phục vụ message history cho nhiều peer |
+  | **Phù hợp** | ✅ P2P thuần, nhẹ, eventual consistency | ❌ Quá tải Coordinator, tiến tới mô hình server |
+
+  Tin nhắn nhóm là **best-effort delivery**: nếu peer offline lúc tin gửi đi, tin đó sẽ không được khôi phục tự động. Tuy nhiên, khi thành viên mới được thêm vào nhóm, Coordinator gửi kèm `chatHistory` (lịch sử tin gần nhất từ DB local của coordinator) trong bản tin `GROUP_JOINED`, giúp thành viên mới không bị "trống" hội thoại hoàn toàn.
+
+### 8.3. Truyền File (File Transfers)
+- **Không lưu qua server trung gian:** Toàn bộ file truyền tải (1-1 hoặc vào nhóm) là P2P hoàn toàn. Dữ liệu file không lưu trên SQLite mà được lưu trực tiếp dưới dạng các tệp tin nhị phân vào thư mục tải về (ví dụ: thư mục downloads/ ở phía peer).
+- **Lưu metadata:** Bảng ile_transfers trong SQLite chỉ lưu trữ siêu dữ liệu (metadata) của file như 	ransferId, ilename, size, sha256, status và đường dẫn file đã lưu (savedPath). 
+- **Chunk-level Checkpointing (Khôi phục tải lỗi):** Trong quá trình truyền file, trạng thái từng phần (chunk) được ghi nhận trong bảng ile_chunks. Nếu mất kết nối giữa chừng, hệ thống sẽ sử dụng dữ liệu này để biết chính xác cần tải tiếp từ chunk nào (FILE_RESUME) thay vì phải tải lại toàn bộ. Cơ chế P2P Swarming trong nhóm còn giúp thành viên có thể tải file từ nhiều nguồn khác nhau, đảm bảo file luôn có thể tải được miễn là có ai đó trong nhóm đang giữ bản sao.
+
+> **Tổng kết:** Mô hình lưu trữ Local-first kết hợp SQLite cho text metadata, hệ thống file system cho binary data, cùng cơ chế Store-and-forward (cho 1-1) và Lazy Repair / P2P Swarming (cho group/file) đảm bảo P2PChat hoạt động bền bỉ, không mất dữ liệu ngay cả trong môi trường mạng thiếu ổn định (high churn).
+
+---
+
+## 4. Cải tiến UI và Đồng bộ luồng (Cập nhật mới)
+
+### 4.1. Hủy bỏ Typing Indicator (Bong bóng soạn tin)
+
+**Tại sao lại phải hủy bỏ Typing Indicator trong mô hình này? Nếu không làm thì sao?**
+- **Tại sao:** Việc duy trì trạng thái "đang gõ" yêu cầu hệ thống phải trao đổi thông điệp với độ trễ cực thấp (low-latency) và tần suất cao. Trong mô hình DHT-lite, việc một Peer gửi tín hiệu `TYPING` tới toàn bộ nhóm có thể gây ra spam mạng lớn. Hơn nữa, với Eventual Consistency, các tín hiệu này không đảm bảo thứ tự và dễ bị lạc, dẫn đến UI bị "kẹt" trạng thái gõ.
+- **Nếu không làm:** Giao diện người dùng sẽ thường xuyên hiển thị sai trạng thái (người khác đã dừng gõ nhưng bong bóng vẫn hiện), và mạng P2P phải chịu tải không cần thiết cho một tính năng không đảm bảo tính nhất quán.
+
+**Bảng so sánh: Typing Indicator (P2P vs Server-Client)**
+| Tiêu chí | Server-Client (Centralized) | P2P DHT-lite |
+|---|---|---|
+| **Mức độ phức tạp** | Thấp (Server quản lý state và push xuống client) | Cao (Mỗi peer phải tự multicast tới N peer khác) |
+| **Băng thông** | Tối ưu (Chỉ 1 kết nối WS tới server) | Tốn kém (N-1 kết nối TCP cho mỗi tín hiệu) |
+| **Tính chính xác** | Cao (Đồng bộ real-time) | Thấp (Dễ mất gói tin, thứ tự lộn xộn) |
+
+### 4.2. Hiển thị Huy hiệu Coordinator (Chữ 'c')
+
+**Tại sao phải thêm huy hiệu 'c' (Coordinator) bên cạnh Owner?**
+- **Tại sao:** Coordinator đóng vai trò quan trọng trong việc duy trì GroupInfo (Control Plane). Người dùng cần biết ai đang giữ vai trò này để có cái nhìn minh bạch về mạng lưới. Nếu Owner (chủ phòng) đồng thời là Coordinator, việc hiển thị cả vương miện (👑) và chữ 'c' giúp xác định rõ hai vai trò độc lập: Quyền quản trị (Owner) và Vai trò hạ tầng mạng (Coordinator).
+- **Nếu không làm:** Người dùng (và Developer khi debug) sẽ không biết peer nào đang chịu trách nhiệm lưu trữ và phân phối trạng thái nhóm, gây khó khăn trong việc hiểu tính chất phân tán của hệ thống.
+
+### 4.3. Fix lỗi mất tin nhắn SYSTEM (Thông báo Join/Kick/Leave)
+
+**Tại sao tin nhắn thông báo (Join/Kick) đôi khi không hiển thị hoặc bị thiếu đoạn giữa?**
+- **Lý do gốc:** 
+  1. **Lỗi truy vấn SQL:** Khi một peer (hoặc người mới join) kéo lịch sử từ DB của Coordinator (`getGroupHistory`), hàm SQL chỉ lấy các tin có type là `GROUP_MESSAGE` và `FILE_OFFER`, bỏ quên `SYSTEM`.
+  2. **Lỗi Local Routing:** Khi một peer *là coordinator* thực hiện lệnh (ví dụ Kick), lệnh được gửi qua API nhưng lại bị bypass (không kích hoạt luồng WS cục bộ) dẫn tới người thực hiện hành động không thấy thông báo của chính mình ngay lập tức.
+- **Tại sao phải sửa theo hướng Route Local và Update SQL? Nếu không làm thì sao?**
+  - Cần thêm `SYSTEM` vào SQL query để đảm bảo lịch sử (State) là nguồn thật duy nhất. 
+  - Cần đồng bộ `PeerServer` và `CoordinatorManager` nội bộ bằng memory (không qua TCP) để giao diện local tự cập nhật.
+  - **Nếu không làm:** Trải nghiệm người dùng sẽ bị đứt gãy. Peer D bị kích rồi vào lại sẽ không thấy dòng chữ "D bị kích" (do D phải kéo history từ Coordinator nhưng Coordinator lại giấu tin nhắn `SYSTEM`), gây hoang mang về dòng thời gian của nhóm.

@@ -22,6 +22,8 @@ public class PeerManager {
     private final RecentPeersCache recentPeersCache;
     private LazyRepairManager lazyRepairManager;
     private final com.mycompany.p2pchat.filetransfer.FileTransferManager fileTransferManager;
+    private CoordinatorManager coordinatorManager;
+    private PeerServer peerServer;
 
     // Peer identity
     private String bootstrapHost;
@@ -156,6 +158,12 @@ public class PeerManager {
 
     public LazyRepairManager getLazyRepairManager() { return lazyRepairManager; }
     public void setLazyRepairManager(LazyRepairManager m) { this.lazyRepairManager = m; }
+
+    public CoordinatorManager getCoordinatorManager() { return coordinatorManager; }
+    public void setCoordinatorManager(CoordinatorManager cm) { this.coordinatorManager = cm; }
+
+    public PeerServer getPeerServer() { return peerServer; }
+    public void setPeerServer(PeerServer ps) { this.peerServer = ps; }
 
     public MessageRepository getMessageRepository() { return messageRepository; }
     public DatabaseManager getDbManager() { return dbManager; }

@@ -68,6 +68,9 @@ peer() {
 start() {
     peer "alice" "33143"
     peer "bob" "33144"
+    peer "duc" "12345"
+    peer "hoang" "12346"
+    peer "hoan" "12349"
 }
 
 stop() {

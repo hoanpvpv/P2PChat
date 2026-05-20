@@ -472,7 +472,9 @@ docker run -d --name peer-bob --network p2p-net \
 - [x] Docker containerized deployment
 - [x] Script `run.sh` quản lý peer với port ngẫu nhiên
 - [x] Gửi/nhận file P2P (Chunked transfer, resumable, SHA-256 validation)
-
+- [x] Hiển thị trạng thái "đang soạn tin" (Typing indicator)
+- [x] Đồng bộ đầy đủ lịch sử nhóm và tin nhắn hệ thống (SYSTEM) báo hiệu tạo nhóm
+- [x] Trải nghiệm giao diện: message bubble cải tiến, thanh broadcast tinh chỉnh
 
 ## 12. Churn Test Tự Động
 

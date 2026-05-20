@@ -181,7 +181,7 @@ export default function Sidebar({
                   <div className="chat-item-name">
                     {group.groupName}
                     {iAmOwner && <span className="role-badge owner" title="Owner">👑</span>}
-                    {!iAmOwner && iAmCoord && <span className="role-badge coord" title="Coordinator">●</span>}
+                    {iAmCoord && <span className="role-badge coord" title="Coordinator">c</span>}
                   </div>
                   <div className="chat-item-status">
                     {group.members?.length || 0} members
@@ -210,7 +210,7 @@ export default function Sidebar({
                         <div key={addr} className="member-row">
                           <span className="member-name">{peerName}</span>
                           {mIsOwner && <span className="role-badge owner" title="Owner">👑</span>}
-                          {!mIsOwner && mIsCoord && <span className="role-badge coord">C</span>}
+                          {mIsCoord && <span className="role-badge coord" title="Coordinator">c</span>}
                           {iAmOwner && addr !== address && (
                             <button className="btn-kick" title="Kick"
                               onClick={e => { e.stopPropagation(); onKickFromGroup(group.groupId, peerName); }}>

@@ -24,6 +24,7 @@ public class Message {
     private String changeType;       // "ADD", "KICK", "LEAVE", "COORD_CHANGE" for GROUP_UPDATED
     private String affected;         // affected member address for GROUP_UPDATED
     private String requester;        // who requested the action
+    private List<Message> chatHistory; // to sync history for new members
     private String newMember;        // for GROUP_ADD
     private String target;           // for GROUP_KICK
     private String newOwner;         // for GROUP_LEAVE (owner case)
@@ -104,6 +105,9 @@ public class Message {
     public String getRequester() { return requester; }
     public void setRequester(String requester) { this.requester = requester; }
 
+    public List<Message> getChatHistory() { return chatHistory; }
+    public void setChatHistory(List<Message> chatHistory) { this.chatHistory = chatHistory; }
+
     public String getNewMember() { return newMember; }
     public void setNewMember(String newMember) { this.newMember = newMember; }
 
@@ -165,6 +169,7 @@ public class Message {
         public Builder changeType(String ct) { message.setChangeType(ct); return this; }
         public Builder affected(String a) { message.setAffected(a); return this; }
         public Builder requester(String r) { message.setRequester(r); return this; }
+        public Builder chatHistory(List<Message> ch) { message.setChatHistory(ch); return this; }
         public Builder newMember(String nm) { message.setNewMember(nm); return this; }
         public Builder target(String t) { message.setTarget(t); return this; }
         public Builder newOwner(String no) { message.setNewOwner(no); return this; }

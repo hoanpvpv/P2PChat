@@ -280,6 +280,18 @@ public class WebServer {
                 coordinatorManager.manageGroup(info);
             }
 
+            // Create SYSTEM message for group creation
+            Message sysMsg = Message.builder()
+                    .type(MessageType.SYSTEM.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender("SYSTEM")
+                    .groupId(info.getGroupId())
+                    .groupName(info.getGroupName())
+                    .content("Nhóm được tạo bởi " + peerManager.getLocalUsername() + " và " + (info.getMembers().size() - 1) + " thành viên khác.")
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            peerManager.getMessageRepository().saveMessage(sysMsg);
+
             // COORD_INIT to other coordinators
             for (String coord : coords) {
                 if (!coord.equals(peerManager.getLocalAddress())) {
@@ -551,6 +563,7 @@ public class WebServer {
                     .coordinators(coords)
                     .version(info.getVersion())
                     .groupMode(info.getGroupMode())
+                    .chatHistory(peerManager.getMessageRepository().getGroupHistory(info.getGroupId()))
                     .build();
             out.println(JsonUtil.toJson(joined));
         } catch (Exception e) {
