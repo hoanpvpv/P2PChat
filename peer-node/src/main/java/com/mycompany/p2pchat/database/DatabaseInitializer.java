@@ -38,9 +38,28 @@ public class DatabaseInitializer {
                 }
             }
             stmt.close();
+            migrateOutbox(connection);
             logger.info("Database schema initialized");
         } catch (SQLException | IOException e) {
             logger.severe("Failed to initialize schema: " + e.getMessage());
+        }
+    }
+
+    private static void migrateOutbox(Connection connection) throws SQLException {
+        addColumnIfMissing(connection, "outbound_messages", "direct_attempt_count", "INTEGER DEFAULT 0");
+        addColumnIfMissing(connection, "outbound_messages", "mailbox_attempt_count", "INTEGER DEFAULT 0");
+        addColumnIfMissing(connection, "outbound_messages", "last_attempt_at", "BIGINT DEFAULT 0");
+        addColumnIfMissing(connection, "outbound_messages", "first_failure_at", "BIGINT DEFAULT 0");
+        addColumnIfMissing(connection, "outbound_messages", "failure_code", "TEXT");
+    }
+
+    private static void addColumnIfMissing(Connection connection, String table, String column, String type) throws SQLException {
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
+        } catch (SQLException e) {
+            if (e.getMessage() == null || !e.getMessage().toLowerCase().contains("duplicate column")) {
+                throw e;
+            }
         }
     }
 }

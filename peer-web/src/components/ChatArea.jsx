@@ -14,6 +14,27 @@ function formatDate(ts) {
   return d.toLocaleDateString();
 }
 
+function renderDeliveryState(state) {
+  switch (state) {
+    case 'DELIVERED_DIRECT':
+    case 'DELIVERED':
+      return ' ✓✓ Đã giao';
+    case 'STORED_MAILBOX':
+      return ' 📬 Đã lưu mailbox';
+    case 'QUEUED_LOCAL':
+    case 'FAILED_RETRYABLE':
+      return ' ⏳ Đang chờ retry';
+    case 'DEAD_LETTER':
+      return ' ❌ Giao thất bại';
+    case 'PENDING_LOCAL':
+    case 'DIRECT_IN_FLIGHT':
+    case 'MAILBOX_IN_FLIGHT':
+      return ' ⌛ Đang gửi';
+    default:
+      return ` · ${state}`;
+  }
+}
+
 function getFileIcon(filename) {
   if (!filename) return '📁';
   const parts = filename.split('.');
@@ -163,7 +184,14 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
                     ) : (
                       <div className="message-content">{msg.content}</div>
                     )}
-                    <div className="message-time">{formatTime(msg.timestamp)}</div>
+                    <div className="message-time">
+                      {formatTime(msg.timestamp)}
+                      {isSent && msg.deliveryState && (
+                        <span className={`delivery-state ds-${msg.deliveryState}`}>
+                          {renderDeliveryState(msg.deliveryState)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

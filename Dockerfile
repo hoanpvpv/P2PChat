@@ -16,6 +16,7 @@ RUN mvn clean package -B -DskipTests
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=build-java /app/target/peer-node.jar /app/peer-node.jar
-RUN mkdir /app/data
-EXPOSE 5001 5002 5003 5004 6001 6002 6003 6004 3000
+RUN mkdir -p /app/data
+# Peer ports are passed at runtime by ./run.sh (web_port, peer_port=web+1000, file_port=peer+1000).
+# Container publishes whichever ports run.sh maps; EXPOSE here is informational only.
 ENTRYPOINT ["java", "-jar", "/app/peer-node.jar"]

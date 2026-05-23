@@ -90,8 +90,17 @@ public class PeerRegistry {
     public String getPeerListJson() {
         List<PeerInfo> online = getOnlinePeers();
         return online.stream()
-                .map(p -> p.getUsername() + "@" + p.getHost() + ":" + p.getPort())
+                .map(this::peerListEntry)
                 .collect(Collectors.joining(","));
+    }
+
+    private String peerListEntry(PeerInfo p) {
+        String entry = p.getUsername() + "@" + p.getHost() + ":" + p.getPort();
+        if (p.getKeyId() != null && !p.getKeyId().isBlank()
+                && p.getPublicKey() != null && !p.getPublicKey().isBlank()) {
+            entry += "|" + p.getKeyId() + "|" + p.getPublicKey();
+        }
+        return entry;
     }
 
     public int getOnlinePeerCount() {

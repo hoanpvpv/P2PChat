@@ -447,6 +447,22 @@ body {
   color: rgba(255, 255, 255, 0.5);
 }
 
+.delivery-state {
+  margin-left: 6px;
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.delivery-state.ds-DELIVERED_DIRECT,
+.delivery-state.ds-DELIVERED { color: #4ade80; }
+.delivery-state.ds-STORED_MAILBOX { color: #fbbf24; }
+.delivery-state.ds-QUEUED_LOCAL,
+.delivery-state.ds-FAILED_RETRYABLE,
+.delivery-state.ds-PENDING_LOCAL,
+.delivery-state.ds-DIRECT_IN_FLIGHT,
+.delivery-state.ds-MAILBOX_IN_FLIGHT { color: rgba(255, 255, 255, 0.7); }
+.delivery-state.ds-DEAD_LETTER { color: #f87171; }
+
 .message-input {
   padding: 12px 20px;
   background: #16213e;
@@ -589,11 +605,36 @@ body {
 }
 
 .sidebar-logo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 20px;
   font-weight: 800;
   color: #e94560;
   letter-spacing: -0.5px;
   margin-bottom: 10px;
+}
+
+.power-off-btn {
+  border: none;
+  background: transparent;
+  color: #aab;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.power-off-btn:hover:not(:disabled) {
+  background: rgba(233, 69, 96, 0.15);
+  color: #e94560;
+}
+
+.power-off-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .sidebar-user {

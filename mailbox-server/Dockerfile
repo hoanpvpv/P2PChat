@@ -7,6 +7,7 @@ RUN mvn clean package -B -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
-COPY --from=build /app/target/bootstrap-server.jar /app/bootstrap-server.jar
-EXPOSE 9000 9001 8080 8081
-ENTRYPOINT ["java", "-jar", "/app/bootstrap-server.jar"]
+COPY --from=build /app/target/mailbox-server.jar /app/mailbox-server.jar
+RUN mkdir -p /app/data
+EXPOSE 9100
+ENTRYPOINT ["java", "-jar", "/app/mailbox-server.jar"]

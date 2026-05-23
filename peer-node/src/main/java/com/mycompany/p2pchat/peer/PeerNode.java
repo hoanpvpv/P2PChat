@@ -9,6 +9,8 @@ import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.logging.Logger;
 
@@ -23,8 +25,10 @@ public class PeerNode {
     private WebServer webServer;
     private CoordinatorManager coordinatorManager;
     private LazyRepairManager lazyRepairManager;
+    private final E2EECrypto e2eeCrypto;
     private volatile boolean running = false;
     private volatile boolean heartbeatStarted = false;
+    private volatile boolean mailboxRetryStarted = false;
 
     public PeerNode(int webPort) {
         this.port = com.mycompany.p2pchat.utils.Constants.DEFAULT_PEER_PORT;
@@ -38,6 +42,9 @@ public class PeerNode {
         this.peerManager.setWebPort(this.webPort);
         this.peerManager.setLocalUsername("");
         this.peerManager.markBootstrapRegistrationFailure("Peer has not been connected to a bootstrap server yet");
+        this.e2eeCrypto = E2EECrypto.loadOrCreate();
+        this.peerManager.setLocalPublicKey(e2eeCrypto.publicKeyBase64());
+        this.peerManager.setLocalKeyId(e2eeCrypto.keyId());
 
         // We defer starting CoordinatorManager and LazyRepairManager until initPeer()
         // But we can initialize them with a dummy address for now to avoid nulls
@@ -72,11 +79,25 @@ public class PeerNode {
         }
     }
 
+    public void setMailboxConfig(String mailbox) {
+        if (mailbox == null || mailbox.isEmpty()) return;
+        String[] parts = mailbox.split(":");
+        peerManager.setMailboxHost(parts[0]);
+        if (parts.length > 1) {
+            peerManager.setMailboxPort(Integer.parseInt(parts[1]));
+        }
+    }
+
     public void start() {
         running = true;
         webServer.start();
         coordinatorManager.start();
-        peerManager.getFileTransferManager().start();
+        startMailboxRetryWorker();
+
+        if (peerManager.getLocalUsername() != null && !peerManager.getLocalUsername().isBlank()
+                && peerManager.getLocalPort() > 0) {
+            initPeer(peerManager.getLocalPort(), peerManager.getLocalUsername());
+        }
 
         System.out.println("=== P2PChat Peer ===");
         System.out.println("Web UI: http://localhost:" + webPort);
@@ -113,8 +134,10 @@ public class PeerNode {
         this.peerServer = new PeerServer(peerPort, peerManager);
         this.peerServer.setWebServer(webServer);
         this.peerServer.setCoordinatorManager(this.coordinatorManager);
+        this.peerServer.setPeerClient(peerClient);
         this.peerManager.setPeerServer(this.peerServer);
         this.peerServer.start();
+        peerManager.getFileTransferManager().restartForCurrentPeerPort();
 
         this.webServer.setCoordinatorManager(this.coordinatorManager);
         peerManager.setLocalUsername(username);
@@ -122,6 +145,8 @@ public class PeerNode {
 
         boolean registered = registerWithBootstrap();
         if (registered && !heartbeatStarted) {
+            peerClient.resolveMailboxFromBootstrap();
+            pullMailboxMessagesToWeb();
             startHeartbeat();
             // Trigger Repair 3: restart — resync all cached groups
             lazyRepairManager.repairAllOnRestart();
@@ -135,7 +160,8 @@ public class PeerNode {
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
             Message reg = ProtocolHandler.createRegister(
-                    peerManager.getLocalUsername(), peerManager.getLocalHost(), port);
+                    peerManager.getLocalUsername(), peerManager.getLocalHost(), port,
+                    peerManager.getLocalKeyId(), peerManager.getLocalPublicKey());
             out.println(JsonUtil.toJson(reg));
             out.flush();
 
@@ -171,6 +197,52 @@ public class PeerNode {
         }, "heartbeat-thread");
         hb.setDaemon(true);
         hb.start();
+    }
+
+    private void startMailboxRetryWorker() {
+        if (mailboxRetryStarted) return;
+        mailboxRetryStarted = true;
+        Thread retry = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(5000);
+                    peerClient.retryOutboxDelivery();
+                    peerManager.getOutboxRepository().cleanupDeliveredOlderThan(
+                            System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);
+                    if (peerManager.isRegisteredToBootstrap()) {
+                        pullMailboxMessagesToWeb();
+                    }
+                } catch (InterruptedException e) {
+                    break;
+                } catch (Exception e) {
+                    logger.fine("Mailbox retry worker error: " + e.getMessage());
+                }
+            }
+        }, "mailbox-retry-thread");
+        retry.setDaemon(true);
+        retry.start();
+    }
+
+    private void pullMailboxMessagesToWeb() {
+        for (Message message : peerClient.pullMailboxMessages()) {
+            String eventType = "DIRECT_MESSAGE";
+            if ("BROADCAST".equals(message.getType())) eventType = "BROADCAST";
+            if ("GROUP_MESSAGE".equals(message.getType())) eventType = "GROUP_MESSAGE";
+            webServer.broadcastToWeb(eventType, messageToMap(message));
+        }
+    }
+
+    private Map<String, Object> messageToMap(Message msg) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("messageId", msg.getMessageId());
+        map.put("sender", msg.getSender());
+        map.put("receiver", msg.getReceiver());
+        map.put("groupName", msg.getGroupName());
+        map.put("groupId", msg.getGroupId());
+        map.put("content", msg.getContent());
+        map.put("type", msg.getType());
+        map.put("timestamp", msg.getTimestamp());
+        return map;
     }
 
     private void sendHeartbeat() {

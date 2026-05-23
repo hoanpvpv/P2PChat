@@ -4,7 +4,7 @@ import {
   sendMessage, sendGroupMessage, sendBroadcast,
   createGroup, addToGroup, kickFromGroup, leaveGroup, disbandGroup,
   discoverPeers, connectWebSocket, autoDetectHost, initPeer,
-  getTransfers, offerFile, acceptFile
+  getTransfers, offerFile, acceptFile, fetchOutbox
 } from './api';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
@@ -73,7 +73,17 @@ export default function App() {
       } else {
         msgs = await fetchGroupHistory(chat.id);
       }
-      setMessages(msgs || []);
+      msgs = msgs || [];
+      if (chat.type === 'peer') {
+        try {
+          const outbox = await fetchOutbox();
+          const stateById = new Map((outbox || []).map(e => [e.messageId, e.state]));
+          msgs = msgs.map(m => stateById.has(m.messageId)
+            ? { ...m, deliveryState: stateById.get(m.messageId) }
+            : m);
+        } catch (e) { /* best-effort */ }
+      }
+      setMessages(msgs);
     } catch (e) {
       console.error('History load failed:', e);
       setMessages([]);
@@ -114,6 +124,12 @@ export default function App() {
             setUnreadCounts(prev => ({ ...prev, [data.groupId]: (prev[data.groupId] || 0) + 1 }));
             showToast(`👥 Message in group`, 'info');
           }
+          break;
+
+        case 'OUTBOX_UPDATE':
+          setMessages(prev => prev.map(m =>
+            m.messageId === data.messageId ? { ...m, deliveryState: data.state } : m
+          ));
           break;
 
         case 'BROADCAST':
@@ -237,12 +253,15 @@ export default function App() {
     try {
       if (activeChat.type === 'peer') {
         const result = await sendMessage(activeChat.name, content);
-        if (result.sent !== false) {
-          setMessages(prev => [...prev, {
-            sender: info.username, receiver: activeChat.name,
-            content, timestamp: Date.now(), type: 'DIRECT_MESSAGE'
-          }]);
-        }
+        setMessages(prev => [...prev, {
+          messageId: result.messageId,
+          sender: info.username,
+          receiver: activeChat.name,
+          content,
+          timestamp: result.timestamp || Date.now(),
+          type: 'DIRECT_MESSAGE',
+          deliveryState: result.status,
+        }]);
       } else if (activeChat.type === 'group') {
         await sendGroupMessage(activeChat.id, content);
         setMessages(prev => [...prev, {

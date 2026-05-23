@@ -187,6 +187,23 @@ export async function cancelFile(transferId) {
   return res.json();
 }
 
+export async function fetchOutbox() {
+  const res = await fetch(`${API_BASE}/outbox`);
+  return res.json();
+}
+
+// ── Power (simulate abrupt offline) ──────────────────────────
+export async function shutdownPeer() {
+  const res = await fetch(`${API_BASE}/shutdown`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  // The server kills its own JVM ~200ms after responding; the fetch
+  // may resolve normally, or reject when the connection drops.
+  return res.json().catch(() => ({ shuttingDown: true }));
+}
+
 // ── WebSocket ─────────────────────────────────────────────────
 export function connectWebSocket(onMessage) {
   const WS_URL = `ws://${window.location.host}/ws`;

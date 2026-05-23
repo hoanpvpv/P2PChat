@@ -7,9 +7,12 @@ import com.mycompany.p2pchat.protocol.MessageType;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
 import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
+import com.mycompany.p2pchat.model.PeerInfo;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -23,26 +26,154 @@ public class PeerClient {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerClient.class.getName());
     private final PeerManager peerManager;
+    private final MailboxClient mailboxClient;
+    private final E2EECrypto e2eeCrypto;
+    private int consecutiveMailboxFailures = 0;
+    private long mailboxCircuitOpenUntil = 0;
 
     public PeerClient(PeerManager peerManager) {
         this.peerManager = peerManager;
+        this.mailboxClient = new MailboxClient(peerManager);
+        this.e2eeCrypto = E2EECrypto.loadOrCreate();
     }
 
     // ==================== Direct Message ====================
 
     public boolean sendDirectMessage(String sender, String receiver, String content) {
-        var peer = peerManager.getPeer(receiver);
-        if (peer == null) {
-            logger.warning("Peer not found: " + receiver);
-            return false;
+        return "DELIVERED_DIRECT".equals(sendDirectMessageStatus(sender, receiver, content));
+    }
+
+    public String sendDirectMessageStatus(String sender, String receiver, String content) {
+        return sendDirectMessageDetailed(sender, receiver, content).status;
+    }
+
+    public static class SendResult {
+        public final String messageId;
+        public final long timestamp;
+        public final String status;
+        public SendResult(String messageId, long timestamp, String status) {
+            this.messageId = messageId;
+            this.timestamp = timestamp;
+            this.status = status;
         }
+    }
+
+    public SendResult sendDirectMessageDetailed(String sender, String receiver, String content) {
         Message message = ProtocolHandler.createDirectMessage(sender, receiver, content);
+        String payloadJson = mailboxClient.payloadJson(message);
+        String payloadHash = mailboxClient.payloadHash(payloadJson);
+        peerManager.getOutboxRepository().savePending(message.getMessageId(), receiver, payloadJson, payloadHash);
         peerManager.getMessageRepository().saveMessage(message);
-        // Update recent peers cache
-        peerManager.getRecentPeersCache().upsert(receiver, peer.getAddress());
-        boolean sent = sendWithRetry(message, peer.getHost(), peer.getPort());
-        if (!sent) storeOfflineMessage(message, peer.getUsername());
-        return sent;
+
+        String status;
+        var peer = peerManager.getPeer(receiver);
+        if (peer == null || !peer.isOnline()) {
+            logger.warning("Peer not online, storing in mailbox: " + receiver);
+            status = storeMailbox(message, payloadJson, payloadHash) ? "STORED_MAILBOX" : "QUEUED_LOCAL";
+        } else {
+            peerManager.getRecentPeersCache().upsert(receiver, peer.getAddress());
+            Message wireMessage = encryptDirectMessage(message, peer);
+            peerManager.getOutboxRepository().markDirectInFlight(message.getMessageId());
+            boolean sent = wireMessage != null && sendWithRetry(wireMessage, peer.getHost(), peer.getPort());
+            if (sent) {
+                peerManager.getOutboxRepository().markDelivered(message.getMessageId());
+                status = "DELIVERED_DIRECT";
+            } else {
+                peerManager.removeKnownPeer(receiver);
+                peerManager.getOutboxRepository().markDirectRetryable(message.getMessageId(), "Direct send failed");
+                status = storeMailbox(message, payloadJson, payloadHash) ? "STORED_MAILBOX" : "QUEUED_LOCAL";
+            }
+        }
+        notifyOutboxState(message.getMessageId(), status, receiver);
+        return new SendResult(message.getMessageId(), message.getTimestamp(), status);
+    }
+
+    private void notifyOutboxState(String messageId, String state, String receiver) {
+        if (peerManager.getPeerServer() != null) {
+            peerManager.getPeerServer().broadcastOutboxUpdate(messageId, state, receiver);
+        }
+    }
+
+    public void resolveMailboxFromBootstrap() {
+        mailboxClient.resolveMailboxFromBootstrap();
+    }
+
+    public void retryMailboxOutbox() {
+        for (var entry : peerManager.getOutboxRepository().dueForMailboxRetry(25)) {
+            try {
+                Message message = JsonUtil.fromJson(entry.payloadJson);
+                if (mailboxClient.store(message, entry.payloadJson, entry.payloadHash)) {
+                    peerManager.getOutboxRepository().markStoredMailbox(
+                            entry.messageId, peerManager.getMailboxHost(), peerManager.getMailboxPort());
+                }
+            } catch (Exception e) {
+                peerManager.getOutboxRepository().markRetryable(entry.messageId, e.getMessage());
+            }
+        }
+    }
+
+    public void retryOutboxDelivery() {
+        for (var entry : peerManager.getOutboxRepository().dueForDeliveryRetry(25)) {
+            retryOutboxEntry(entry);
+        }
+    }
+
+    public void retryOutboxDeliveryForReceiver(String receiver) {
+        for (var entry : peerManager.getOutboxRepository().pendingForReceiver(receiver, 50)) {
+            retryOutboxEntry(entry);
+        }
+    }
+
+    private void retryOutboxEntry(com.mycompany.p2pchat.database.OutboxRepository.OutboxEntry entry) {
+            Message message;
+            try {
+                message = JsonUtil.fromJson(entry.payloadJson);
+            } catch (Exception e) {
+                peerManager.getOutboxRepository().markRetryable(entry.messageId, e.getMessage());
+                return;
+            }
+            if (message == null) {
+                peerManager.getOutboxRepository().markRetryable(entry.messageId, "Invalid outbox payload");
+                return;
+            }
+
+            PeerInfo receiver = peerManager.getPeer(entry.receiver);
+            boolean triedDirect = receiver != null && receiver.isOnline();
+            if (triedDirect) {
+                peerManager.getRecentPeersCache().upsert(entry.receiver, receiver.getAddress());
+                Message wireMessage = encryptDirectMessage(message, receiver);
+                peerManager.getOutboxRepository().markDirectInFlight(entry.messageId);
+                if (wireMessage != null && sendWithRetry(wireMessage, receiver.getHost(), receiver.getPort())) {
+                    peerManager.getOutboxRepository().markDelivered(entry.messageId);
+                    logger.info("Delivered outbox message directly after peer recovery: " + entry.messageId);
+                    notifyOutboxState(entry.messageId, "DELIVERED_DIRECT", entry.receiver);
+                    return;
+                }
+                peerManager.removeKnownPeer(entry.receiver);
+                peerManager.getOutboxRepository().markDirectRetryable(entry.messageId, "Direct replay failed");
+            }
+
+            if (!"STORED_MAILBOX".equals(entry.state)) {
+                boolean stored = storeMailbox(message, entry.payloadJson, entry.payloadHash);
+                notifyOutboxState(entry.messageId, stored ? "STORED_MAILBOX" : "FAILED_RETRYABLE", entry.receiver);
+            }
+    }
+
+    public List<Message> pullMailboxMessages() {
+        List<Message> delivered = new ArrayList<>();
+        try {
+            for (MailboxEnvelope envelope : mailboxClient.pull(100)) {
+                Message message = mailboxClient.decryptEnvelope(envelope);
+                if (message == null || message.getMessageId() == null) continue;
+                boolean alreadyHad = peerManager.getMessageRepository().messageExists(message.getMessageId());
+                peerManager.getMessageRepository().saveMessage(message);
+                mailboxClient.deliveryAck(message.getMessageId());
+                if (!alreadyHad) delivered.add(message);
+            }
+        } catch (Exception e) {
+            logger.fine("Mailbox pull failed: " + e.getMessage());
+        }
+        return delivered;
     }
 
     // ==================== Group Message (Data Plane) ====================
@@ -191,7 +322,8 @@ public class PeerClient {
     }
 
     private boolean sendSingle(Message message, String host, int port) {
-        try (Socket socket = new Socket(host, port)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), Constants.ACK_TIMEOUT);
             socket.setSoTimeout(Constants.ACK_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -205,17 +337,63 @@ public class PeerClient {
         }
     }
 
-    private void storeOfflineMessage(Message message, String receiverUsername) {
-        if (!peerManager.isRegisteredToBootstrap()) return;
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
-            socket.setSoTimeout(3000);
-            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Message storeMsg = ProtocolHandler.createStoreMessage(
-                    message.getSender(), receiverUsername, message.getContent());
-            out.println(JsonUtil.toJson(storeMsg));
-            out.flush();
-        } catch (IOException e) {
-            logger.warning("Failed to store offline message: " + e.getMessage());
+    private Message encryptDirectMessage(Message plaintext, PeerInfo receiver) {
+        if (receiver == null || receiver.getPublicKey() == null || receiver.getPublicKey().isBlank()
+                || receiver.getKeyId() == null || receiver.getKeyId().isBlank()) {
+            logger.warning("Missing E2EE public key for direct receiver: " + plaintext.getReceiver());
+            return null;
+        }
+        Message encrypted = Message.builder()
+                .type(plaintext.getType())
+                .messageId(plaintext.getMessageId())
+                .sender(plaintext.getSender())
+                .receiver(plaintext.getReceiver())
+                .content(e2eeCrypto.encryptFor(plaintext.getContent(), receiver.getPublicKey(), receiver.getKeyId()))
+                .timestamp(plaintext.getTimestamp())
+                .encryptionAlgorithm(E2EECrypto.ALGORITHM)
+                .senderKeyId(peerManager.getLocalKeyId())
+                .receiverKeyId(receiver.getKeyId())
+                .build();
+        return encrypted;
+    }
+
+    private boolean storeMailbox(Message message, String payloadJson, String payloadHash) {
+        if (isMailboxCircuitOpen()) {
+            peerManager.getOutboxRepository().markMailboxRetryable(
+                    message.getMessageId(), "Mailbox circuit open until " + mailboxCircuitOpenUntil);
+            return false;
+        }
+        try {
+            peerManager.getOutboxRepository().markMailboxInFlight(message.getMessageId());
+            boolean stored = mailboxClient.store(message, payloadJson, payloadHash);
+            if (stored) {
+                recordMailboxSuccess();
+                peerManager.getOutboxRepository().markStoredMailbox(
+                        message.getMessageId(), peerManager.getMailboxHost(), peerManager.getMailboxPort());
+            }
+            return stored;
+        } catch (Exception e) {
+            recordMailboxFailure();
+            peerManager.getOutboxRepository().markMailboxRetryable(message.getMessageId(), e.getMessage());
+            logger.warning("Failed to store mailbox message: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isMailboxCircuitOpen() {
+        return System.currentTimeMillis() < mailboxCircuitOpenUntil;
+    }
+
+    private void recordMailboxSuccess() {
+        consecutiveMailboxFailures = 0;
+        mailboxCircuitOpenUntil = 0;
+    }
+
+    private void recordMailboxFailure() {
+        consecutiveMailboxFailures++;
+        if (consecutiveMailboxFailures >= Constants.MAILBOX_CIRCUIT_FAILURE_THRESHOLD) {
+            mailboxCircuitOpenUntil = System.currentTimeMillis() + Constants.MAILBOX_CIRCUIT_OPEN_MS;
+            logger.warning("Mailbox circuit opened until " + mailboxCircuitOpenUntil);
         }
     }
 

@@ -7,6 +7,7 @@ public class PeerApp {
         String bootstrap = null;
         String username = null;
         String host = null;
+        String mailbox = null;
         int peerPort = 0;
 
         for (int i = 0; i < args.length; i++) {
@@ -22,6 +23,8 @@ public class PeerApp {
                 username = args[++i];
             } else if (args[i].equals("--host") && i + 1 < args.length) {
                 host = args[++i];
+            } else if (args[i].equals("--mailbox") && i + 1 < args.length) {
+                mailbox = args[++i];
             } else if (args[i].equals("--port") && i + 1 < args.length) {
                 try {
                     peerPort = Integer.parseInt(args[++i]);
@@ -33,6 +36,7 @@ public class PeerApp {
 
         PeerNode peer = new PeerNode(webPort);
         peer.setConfig(username, host, peerPort, bootstrap);
+        peer.setMailboxConfig(mailbox);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\nShutting down peer...");
         }));

@@ -9,6 +9,7 @@ import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
@@ -22,6 +23,8 @@ public class BootstrapServer {
 
     private static final Logger logger = LoggerUtil.getLogger(BootstrapServer.class.getName());
     private final int port;
+    private final String mailboxHost;
+    private final int mailboxPort;
     private final PeerRegistry registry;
     private final BootstrapEventLog eventLog = new BootstrapEventLog();
     private ServerSocket serverSocket;
@@ -29,7 +32,13 @@ public class BootstrapServer {
     private volatile boolean running = false;
 
     public BootstrapServer(int port) {
+        this(port, "localhost", 9100);
+    }
+
+    public BootstrapServer(int port, String mailboxHost, int mailboxPort) {
         this.port = port;
+        this.mailboxHost = mailboxHost;
+        this.mailboxPort = mailboxPort;
         this.registry = new PeerRegistry();
     }
 
@@ -75,7 +84,9 @@ public class BootstrapServer {
     }
 
     public void broadcastPeerJoin(PeerInfo newPeer) {
-        Message joinMsg = ProtocolHandler.createPeerJoin(newPeer.getUsername(), newPeer.getHost(), newPeer.getPort());
+        Message joinMsg = ProtocolHandler.createPeerJoin(
+                newPeer.getUsername(), newPeer.getHost(), newPeer.getPort(),
+                newPeer.getKeyId(), newPeer.getPublicKey());
         eventLog.info("PEER_JOIN", newPeer.getUsername(), newPeer.getHost() + ":" + newPeer.getPort());
         broadcastToAll(joinMsg, newPeer.getUsername());
     }
@@ -89,12 +100,12 @@ public class BootstrapServer {
     private void broadcastToAll(Message message, String excludePeer) {
         for (PeerInfo peer : registry.getOnlinePeers()) {
             if (peer.getUsername().equals(excludePeer)) continue;
-            try {
-                Socket socket = new Socket(peer.getHost(), peer.getPort());
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()), Constants.ACK_TIMEOUT);
+                socket.setSoTimeout(Constants.ACK_TIMEOUT);
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                 out.println(JsonUtil.toJson(message));
                 out.flush();
-                socket.close();
             } catch (IOException e) {
                 logger.warning("Failed to broadcast to " + peer.getUsername() + ": " + e.getMessage());
                 eventLog.warn("BROADCAST_FAILED", peer.getUsername(), e.getMessage());
@@ -134,6 +145,14 @@ public class BootstrapServer {
 
     public int getPort() {
         return port;
+    }
+
+    public String getMailboxHost() {
+        return mailboxHost;
+    }
+
+    public int getMailboxPort() {
+        return mailboxPort;
     }
 
     public boolean isRunning() {

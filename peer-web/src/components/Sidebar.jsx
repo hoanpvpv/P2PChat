@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { shutdownPeer } from '../api';
 
 export default function Sidebar({
   username, address, peers, groups, activeChat, unreadCounts = {},
@@ -6,6 +7,18 @@ export default function Sidebar({
   onKickFromGroup, onLeaveGroup, onDisbandGroup,
   isOwner, isCoord,
 }) {
+  const [shuttingDown, setShuttingDown] = useState(false);
+
+  const handlePowerOff = async () => {
+    const ok = window.confirm(
+      `Tắt nguồn peer "${username}"?\n\n` +
+      `Container sẽ exit ngay (mô phỏng người dùng off đột ngột).\n` +
+      `Volume data/peers/${username} vẫn còn — chạy "docker start peer-${username}" để bật lại.`
+    );
+    if (!ok) return;
+    setShuttingDown(true);
+    try { await shutdownPeer(); } catch (e) { /* expected: connection drops */ }
+  };
   const [showGroupForm, setShowGroupForm] = useState(false);
   const [groupName, setGroupName] = useState('');
   const [groupMode, setGroupMode] = useState('OPEN');
@@ -40,12 +53,25 @@ export default function Sidebar({
     <div className="sidebar">
       {/* Header */}
       <div className="sidebar-header">
-        <div className="sidebar-logo">P2PChat</div>
+        <div className="sidebar-logo">
+          <span>P2PChat</span>
+          <button
+            type="button"
+            className="power-off-btn"
+            onClick={handlePowerOff}
+            disabled={shuttingDown}
+            title="Tắt nguồn peer (mô phỏng off đột ngột)"
+          >
+            {shuttingDown ? '...' : '⏻'}
+          </button>
+        </div>
         <div className="sidebar-user">
           <div className="user-avatar">{username?.charAt(0)?.toUpperCase() || '?'}</div>
           <div className="user-info">
             <div className="user-name">{username}</div>
-            <div className="user-status online">● online</div>
+            <div className={`user-status ${shuttingDown ? 'offline' : 'online'}`}>
+              {shuttingDown ? '● shutting down' : '● online'}
+            </div>
           </div>
         </div>
       </div>

@@ -42,4 +42,5 @@ logs/
 data/
 
 # Generated files
-**dependency-reduced-pom.xml
+**/dependency-reduced-pom.xml
+peers-index.html

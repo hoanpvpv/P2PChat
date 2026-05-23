@@ -81,6 +81,8 @@ public class BootstrapDashboardServer {
         payload.put("serverHost", resolveServerHost());
         payload.put("bootstrapPort", bootstrapServer.getPort());
         payload.put("dashboardPort", port);
+        payload.put("mailboxHost", bootstrapServer.getMailboxHost());
+        payload.put("mailboxPort", bootstrapServer.getMailboxPort());
         payload.put("running", bootstrapServer.isRunning());
         payload.put("onlinePeerCount", registry.getOnlinePeerCount());
         payload.put("knownPeerCount", registry.getAllPeerCount());

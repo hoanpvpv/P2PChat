@@ -17,6 +17,9 @@ public class MessageRepository {
     }
 
     public void saveMessage(Message msg) {
+        if (messageExists(msg.getMessageId())) {
+            return;
+        }
         String sql = "INSERT INTO messages (message_id, sender, receiver, group_name, content, type, timestamp, delivered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
             pstmt.setString(1, msg.getMessageId());
@@ -30,6 +33,39 @@ public class MessageRepository {
             pstmt.executeUpdate();
         } catch (SQLException e) {
             logger.severe("Failed to save message: " + e.getMessage());
+        }
+    }
+
+    public List<String> getDirectChatPartners(String me) {
+        List<String> partners = new ArrayList<>();
+        if (me == null || me.isBlank()) return partners;
+        String sql = "SELECT DISTINCT CASE WHEN sender = ? THEN receiver ELSE sender END AS partner " +
+                "FROM messages WHERE type = 'DIRECT_MESSAGE' AND (sender = ? OR receiver = ?)";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setString(1, me);
+            ps.setString(2, me);
+            ps.setString(3, me);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                String partner = rs.getString("partner");
+                if (partner != null && !partner.isBlank()) partners.add(partner);
+            }
+        } catch (SQLException e) {
+            logger.severe("Failed to load chat partners: " + e.getMessage());
+        }
+        return partners;
+    }
+
+    public boolean messageExists(String messageId) {
+        if (messageId == null || messageId.isBlank()) return false;
+        String sql = "SELECT 1 FROM messages WHERE message_id = ? LIMIT 1";
+        try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
+            pstmt.setString(1, messageId);
+            ResultSet rs = pstmt.executeQuery();
+            return rs.next();
+        } catch (SQLException e) {
+            logger.severe("Failed to check message existence: " + e.getMessage());
+            return false;
         }
     }
 

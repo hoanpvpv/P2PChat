@@ -313,9 +313,8 @@ Kết quả: thư mục `peer-web/build/` chứa static files.
 
 ```bash
 cd /path/to/P2PChat
-
-Remove-Item -Recurse -Force peer-node/src/main/resources/static
-Copy-Item -Recurse peer-web/build peer-node/src/main/resources/static
+rm -rf peer-node/src/main/resources/static
+cp -r peer-web/build peer-node/src/main/resources/static
 ```
 
 #### Bước 4: Build Bootstrap Server
@@ -345,46 +344,48 @@ Kết quả: `peer-node/target/peer-node.jar`
 #### Bước 6: Khởi động Bootstrap Server
 
 ```bash
-cd /path/to/P2PChat/bootstrap-server
-java -jar target/bootstrap-server.jar
+cd /path/to/P2PChat
+java -jar bootstrap-server/target/bootstrap-server.jar
 ```
 
-Bootstrap server chạy mặc định trên port `8080`, và dashboard web admin chạy trên `http://localhost:8081`. Giữ terminal này mở.
+Bootstrap server chạy mặc định trên port `8080`. Giữ terminal này mở.
 
 #### Bước 7: Khởi động Peer Node
 
 Mở terminal mới cho mỗi peer:
 
 ```bash
-cd /path/to/P2PChat/peer-node
+# Terminal 2 — Peer alice
+java -jar peer-node/target/peer-node.jar \
+  --username alice \
+  --port 5001 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3000
 
-# Terminal 2 — Peer A (web port 3000, peer port 5001 khi khởi tạo trên Web UI)
-java -jar target/peer-node.jar
+# Terminal 3 — Peer bob
+java -jar peer-node/target/peer-node.jar \
+  --username bob \
+  --port 5002 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3001
 
-# Terminal 3 — Peer B (web port 3001, peer port 5002 khi khởi tạo trên Web UI)
-java -jar target/peer-node.jar --web 3001
-
-# Terminal 4 — Peer C (web port 3002, peer port 5003 khi khởi tạo trên Web UI)
-java -jar target/peer-node.jar --web 3002
+# Terminal 4 — Peer charlie
+java -jar peer-node/target/peer-node.jar \
+  --username charlie \
+  --port 5003 \
+  --host localhost \
+  --bootstrap localhost:8080 \
+  --web 3002
 ```
-
-> **Lưu ý:** Tham số `--web` chỉ định **web port** (giao diện HTTP/WebSocket). **Peer port** (TCP P2P giữa các peer) được nhập thủ công qua Web UI khi mỗi peer khởi tạo. Mỗi peer cần một peer port khác nhau (5001, 5002, 5003...) để tránh xung đột.
-
-Sau khi peer chạy, mở Web UI của peer và nhập:
-- `username`
-- `host`
-- `peer port` (TCP port P2P, ví dụ: 5001, 5002...)
-- `bootstrap host` (mặc định `localhost`)
-- `bootstrap port` (mặc định `8080`)
-
-Rồi bấm `Connect Peer` để đăng ký vào mạng.
 
 #### Bước 8: Truy cập Web UI
 
 Mở trình duyệt:
-- Peer A: `http://localhost:3000`
-- Peer B: `http://localhost:3001`
-- Peer C: `http://localhost:3002`
+- Peer alice: `http://localhost:3000`
+- Peer bob: `http://localhost:3001`
+- Peer charlie: `http://localhost:3002`
 
 ---
 
@@ -416,6 +417,10 @@ docker attach peer-alice
 
 | Flag | Mặc định | Mô tả |
 |---|---|---|
+| `--username` | `peer` | Tên hiển thị |
+| `--port` | `5001` | Port TCP P2P |
+| `--host` | `localhost` | Hostname/IP quảng bá |
+| `--bootstrap` | `localhost:8080` | Địa chỉ bootstrap server |
 | `--web` | `3000` | Port Web UI (HTTP + WebSocket) |
 
 ---
@@ -451,7 +456,7 @@ docker run -d --name peer-bob --network p2p-net \
 | `mvn: command not found` | Chưa cài Maven | Cài Maven 3.9+ |
 | `npm: command not found` | Chưa cài Node.js | Cài Node.js 18+ |
 | `Port 8080 already in use` | Bootstrap server port bị chiếm | Dừng process chiếm port hoặc đổi port |
-| `Port 5001 already in use` | Peer port bị chiếm | Nhập port khác khi khởi tạo peer trên Web UI |
+| `Port 5001 already in use` | Peer port bị chiếm | Dùng port khác qua `--port` |
 | `Connection refused` | Peer không kết nối được Bootstrap | Kiểm tra Bootstrap đang chạy và `--bootstrap` đúng địa chỉ |
 | `Web UI không load` | Chưa build React hoặc chưa copy static files | Chạy lại `build.sh` hoặc build thủ công Bước 2–3 |
 | Docker build chậm | Lần đầu download dependencies | Bình thường, chờ 3-5 phút |
@@ -471,65 +476,7 @@ docker run -d --name peer-bob --network p2p-net \
 - [x] Thêm member vào group qua Web UI
 - [x] Docker containerized deployment
 - [x] Script `run.sh` quản lý peer với port ngẫu nhiên
-- [x] Gửi/nhận file P2P (Chunked transfer, resumable, SHA-256 validation)
-- [x] Hiển thị trạng thái "đang soạn tin" (Typing indicator)
-- [x] Đồng bộ đầy đủ lịch sử nhóm và tin nhắn hệ thống (SYSTEM) báo hiệu tạo nhóm
-- [x] Trải nghiệm giao diện: message bubble cải tiến, thanh broadcast tinh chỉnh
 
-## 12. Churn Test Tự Động
-
-Dự án có sẵn script PowerShell `churn-test.ps1` để mô phỏng churn:
-- peer tham gia mạng
-- peer crash/rời mạng đột ngột
-- peer quay lại mạng
-
-#### Cách chạy nhanh
-
-Chạy từ thư mục gốc `P2PChat`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\churn-test.ps1
-```
-
-Script sẽ tự:
-- khởi động `bootstrap-server`
-- khởi động nhiều `peer-node`
-- gọi API `/api/register` để peer tự kết nối vào bootstrap
-- lặp các vòng crash/join lại
-- ghi log vào thư mục `churn-logs`
-
-#### Ví dụ có tham số
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\churn-test.ps1 `
-  -PeerCount 6 `
-  -InitialPeers 3 `
-  -TotalRounds 10 `
-  -RoundIntervalSec 5
-```
-
-Ý nghĩa tham số:
-
-| Tham số | Mô tả |
-|---|---|
-| `-PeerCount` | Tổng số peer dùng trong bài test |
-| `-InitialPeers` | Số peer khởi động ban đầu |
-| `-TotalRounds` | Số vòng churn |
-| `-RoundIntervalSec` | Thời gian nghỉ giữa các vòng |
-| `-BootstrapPort` | Port bootstrap server |
-| `-DashboardPort` | Port dashboard bootstrap |
-| `-BasePeerPort` | Port bắt đầu cho peer TCP |
-| `-BaseWebPort` | Port bắt đầu cho Web UI peer |
-| `-StartBootstrap:$false` | Dùng bootstrap đã chạy sẵn thay vì để script tự mở |
-| `-KeepBootstrapRunning` | Giữ bootstrap chạy sau khi test xong |
-| `-KeepPeersRunning` | Giữ peer chạy sau khi test xong |
-
-#### Quan sát kết quả ở đâu
-
-- Dashboard bootstrap: `http://localhost:8081`
-- Bảng `Known Peers`
-- Bảng `Realtime Event Log`
-- Log file trong thư mục `churn-logs`
-## 13. Tác giả
+## 12. Tác giả
 
 Đồ án môn Hệ thống Phân tán.

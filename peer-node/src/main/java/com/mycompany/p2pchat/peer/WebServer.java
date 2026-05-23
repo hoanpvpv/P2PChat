@@ -84,15 +84,41 @@ public class WebServer {
             info.put("webPort", peerManager.getWebPort());
             info.put("bootstrapHost", peerManager.getBootstrapHost());
             info.put("bootstrapPort", peerManager.getBootstrapPort());
+            info.put("mailboxHost", peerManager.getMailboxHost());
+            info.put("mailboxPort", peerManager.getMailboxPort());
             info.put("address", peerManager.getLocalAddress());
             info.put("registered", peerManager.isRegisteredToBootstrap());
             info.put("lastBootstrapError", peerManager.getLastBootstrapError());
             ctx.contentType("application/json").result(gson.toJson(info));
         });
 
+        app.get("/health", ctx -> {
+            Map<String, Object> health = new HashMap<>();
+            health.put("status", "UP");
+            health.put("registered", peerManager.isRegisteredToBootstrap());
+            health.put("username", peerManager.getLocalUsername());
+            health.put("address", peerManager.getLocalAddress());
+            health.put("mailbox", peerManager.getMailboxHost() + ":" + peerManager.getMailboxPort());
+            ctx.contentType("application/json").result(gson.toJson(health));
+        });
+
         // ── Peers ──
-        app.get("/api/peers", ctx -> ctx.contentType("application/json")
-                .result(gson.toJson(peerManager.getOnlinePeers())));
+        // Trả về tất cả peer đã từng biết (kèm cờ online) + những đối tác đã từng chat
+        // trong DB local. Giữ peer trong sidebar kể cả khi họ off để xem lại lịch sử.
+        app.get("/api/peers", ctx -> {
+            Map<String, PeerInfo> merged = new LinkedHashMap<>();
+            for (PeerInfo p : peerManager.getAllKnownPeers()) merged.put(p.getUsername(), p);
+            String me = peerManager.getLocalUsername();
+            for (String partner : peerManager.getMessageRepository().getDirectChatPartners(me)) {
+                if (partner == null || partner.isBlank() || partner.equals(me)) continue;
+                if (!merged.containsKey(partner)) {
+                    PeerInfo stub = new PeerInfo(partner, "", 0);
+                    stub.setOnline(false);
+                    merged.put(partner, stub);
+                }
+            }
+            ctx.contentType("application/json").result(gson.toJson(merged.values()));
+        });
 
         app.get("/api/discover", ctx -> {
             if (!peerManager.isRegisteredToBootstrap()) {
@@ -124,12 +150,32 @@ public class WebServer {
             ctx.contentType("application/json").result(gson.toJson(msgs));
         });
 
+        app.get("/api/outbox", ctx -> ctx.contentType("application/json")
+                .result(gson.toJson(peerManager.getOutboxRepository().recent(100))));
+
+        // Simulate user pulling the plug: kill JVM -> container exits with non-zero status.
+        // Volume `/app/data` is untouched, so history/outbox/keys survive a `docker start`.
+        app.post("/api/shutdown", ctx -> {
+            ctx.contentType("application/json").result(gson.toJson(Map.of(
+                    "shuttingDown", true,
+                    "username", peerManager.getLocalUsername())));
+            new Thread(() -> {
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                Runtime.getRuntime().halt(137);
+            }, "peer-shutdown").start();
+        });
+
         app.post("/api/msg", ctx -> {
             Map<String, String> body = gson.fromJson(ctx.body(), Map.class);
             String receiver = body.get("receiver"), content = body.get("content");
             if (receiver == null || content == null) { ctx.status(400).result("Missing receiver or content"); return; }
-            boolean sent = peerClient.sendDirectMessage(peerManager.getLocalUsername(), receiver, content);
-            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", sent)));
+            PeerClient.SendResult result = peerClient.sendDirectMessageDetailed(
+                    peerManager.getLocalUsername(), receiver, content);
+            ctx.contentType("application/json").result(gson.toJson(Map.of(
+                    "sent", "DELIVERED_DIRECT".equals(result.status),
+                    "status", result.status,
+                    "messageId", result.messageId,
+                    "timestamp", result.timestamp)));
         });
 
         app.get("/api/auto-detect-host", ctx -> {

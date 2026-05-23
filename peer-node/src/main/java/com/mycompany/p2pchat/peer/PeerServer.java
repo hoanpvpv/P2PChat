@@ -27,6 +27,8 @@ public class PeerServer {
     private volatile boolean running = false;
     private WebServer webServer;
     private CoordinatorManager coordinatorManager;
+    private final E2EECrypto e2eeCrypto;
+    private PeerClient peerClient;
 
     // Lamport buffer: groupId → scheduled messages
     private final Map<String, List<Message>> lamportBuffers = new ConcurrentHashMap<>();
@@ -38,10 +40,12 @@ public class PeerServer {
     public PeerServer(int port, PeerManager peerManager) {
         this.port = port;
         this.peerManager = peerManager;
+        this.e2eeCrypto = E2EECrypto.loadOrCreate();
     }
 
     public void setWebServer(WebServer webServer) { this.webServer = webServer; }
     public void setCoordinatorManager(CoordinatorManager cm) { this.coordinatorManager = cm; }
+    public void setPeerClient(PeerClient peerClient) { this.peerClient = peerClient; }
 
     public void start() {
         running = true;
@@ -139,6 +143,7 @@ public class PeerServer {
     // ─────────────────────── P2P Messaging ───────────────────────
 
     private void handleDirectMessage(Message msg) {
+        msg = decryptDirectMessage(msg);
         System.out.printf("%n[%s] %s -> you: %s%n> ",
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
         peerManager.getMessageRepository().saveMessage(msg);
@@ -146,6 +151,15 @@ public class PeerServer {
         var peer = peerManager.getPeer(msg.getSender());
         if (peer != null) peerManager.getRecentPeersCache().upsert(msg.getSender(), peer.getAddress());
         broadcastWs("DIRECT_MESSAGE", messageToMap(msg));
+    }
+
+    private Message decryptDirectMessage(Message msg) {
+        if (!E2EECrypto.isEncryptedAlgorithm(msg.getEncryptionAlgorithm())) {
+            return msg;
+        }
+        msg.setContent(e2eeCrypto.decrypt(msg.getContent()));
+        msg.setEncryptionAlgorithm(null);
+        return msg;
     }
 
     private void handleGroupMessage(Message msg, Socket socket) {
@@ -213,9 +227,12 @@ public class PeerServer {
     // ─────────────────────── Peer Events ───────────────────────
 
     private void handlePeerJoin(Message msg) {
-        String[] parts = msg.getContent().split(":");
+        String[] keyParts = msg.getContent().split("\\|", -1);
+        String[] parts = keyParts[0].split(":");
         if (parts.length == 2) {
             PeerInfo peer = new PeerInfo(msg.getSender(), parts[0], Integer.parseInt(parts[1]));
+            if (keyParts.length > 1 && !keyParts[1].isBlank()) peer.setKeyId(keyParts[1]);
+            if (keyParts.length > 2 && !keyParts[2].isBlank()) peer.setPublicKey(keyParts[2]);
             peerManager.addKnownPeer(peer);
             System.out.printf("%n[SYSTEM] %s joined the network.%n> ", msg.getSender());
             Map<String, Object> data = new HashMap<>();
@@ -223,6 +240,17 @@ public class PeerServer {
             data.put("host", parts[0]);
             data.put("port", Integer.parseInt(parts[1]));
             broadcastWs("PEER_JOIN", data);
+            if (peerClient != null) {
+                new Thread(() -> {
+                    for (int i = 0; i < 6; i++) {
+                        peerClient.retryOutboxDeliveryForReceiver(msg.getSender());
+                        try { Thread.sleep(5000); } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }, "outbox-replay-" + msg.getSender()).start();
+            }
         }
     }
 
@@ -544,6 +572,15 @@ public class PeerServer {
 
     private void broadcastWs(String type, Object data) {
         if (webServer != null) webServer.broadcastToWeb(type, data);
+    }
+
+    public void broadcastOutboxUpdate(String messageId, String state, String receiver) {
+        if (messageId == null) return;
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("messageId", messageId);
+        payload.put("state", state);
+        payload.put("receiver", receiver);
+        broadcastWs("OUTBOX_UPDATE", payload);
     }
 
     private Map<String, Object> messageToMap(Message msg) {

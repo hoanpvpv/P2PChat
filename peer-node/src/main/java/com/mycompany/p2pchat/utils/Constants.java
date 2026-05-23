@@ -5,6 +5,8 @@ public class Constants {
     public static final int DEFAULT_BOOTSTRAP_PORT = 8080;
     public static final int DEFAULT_PEER_PORT = 5001;
     public static final int DEFAULT_WEB_PORT = 3000;
+    public static final String DEFAULT_MAILBOX_HOST = "localhost";
+    public static final int DEFAULT_MAILBOX_PORT = 9100;
 
     // Heartbeat
     public static final int HEARTBEAT_INTERVAL = 5000;
@@ -14,6 +16,11 @@ public class Constants {
     public static final int ACK_TIMEOUT = 5000;
     public static final int MAX_RETRIES = 3;
     public static final int RECONNECT_INTERVAL = 3000;
+    public static final int OUTBOX_MAX_ATTEMPTS = 12;
+    public static final long OUTBOX_BACKOFF_BASE_MS = 5000;
+    public static final long OUTBOX_BACKOFF_MAX_MS = 15 * 60 * 1000;
+    public static final int MAILBOX_CIRCUIT_FAILURE_THRESHOLD = 3;
+    public static final long MAILBOX_CIRCUIT_OPEN_MS = 30000;
     public static final String DELIMITER = "\n";
 
     // Database

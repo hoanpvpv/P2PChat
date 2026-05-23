@@ -26,7 +26,7 @@ public class FileTransferManager {
     private static final Path DOWNLOAD_DIR = Path.of("data", "downloads");
 
     private final PeerManager peerManager;
-    private final FileTransferServer fileServer;
+    private FileTransferServer fileServer;
     private final FileTransferClient fileClient;
     private final FileTransferRepository repository;
     private WebServer webServer;
@@ -46,8 +46,19 @@ public class FileTransferManager {
     public void setWebServer(WebServer ws) { this.webServer = ws; }
 
     public void start() {
+        int expectedFilePort = peerManager.getLocalPort() + Constants.FILE_PORT_OFFSET;
+        if (fileServer == null || fileServer.getFilePort() != expectedFilePort) {
+            if (fileServer != null) fileServer.stop();
+            fileServer = new FileTransferServer(peerManager.getLocalPort());
+        }
         fileServer.start();
         logger.info("FileTransferManager started, filePort=" + fileServer.getFilePort());
+    }
+
+    public void restartForCurrentPeerPort() {
+        if (fileServer != null) fileServer.stop();
+        fileServer = new FileTransferServer(peerManager.getLocalPort());
+        start();
     }
 
     public void stop() {

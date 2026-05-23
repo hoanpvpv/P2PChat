@@ -63,6 +63,9 @@ public class ClientHandler implements Runnable {
                 case DISCOVER:
                     handleDiscover(message);
                     break;
+                case RESOLVE_MAILBOX:
+                    handleResolveMailbox();
+                    break;
                 case STORE_MESSAGE:
                     handleStoreMessage(message);
                     break;
@@ -78,7 +81,8 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleRegister(Message message) {
-        String[] parts = message.getContent().split(":");
+        String[] keyParts = message.getContent().split("\\|", -1);
+        String[] parts = keyParts[0].split(":");
         if (parts.length != 2) {
             bootstrapServer.getEventLog().warn("REGISTER_INVALID", message.getSender(), "Invalid register format");
             send(ProtocolHandler.createError("Invalid register format. Use host:port"));
@@ -88,6 +92,8 @@ public class ClientHandler implements Runnable {
         String host = parts[0];
         int port = Integer.parseInt(parts[1]);
         PeerInfo peerInfo = new PeerInfo(message.getSender(), host, port);
+        if (keyParts.length > 1 && !keyParts[1].isBlank()) peerInfo.setKeyId(keyParts[1]);
+        if (keyParts.length > 2 && !keyParts[2].isBlank()) peerInfo.setPublicKey(keyParts[2]);
 
         boolean wasAlreadyKnown = registry.contains(peerInfo.getUsername());
         if (wasAlreadyKnown) {
@@ -123,6 +129,18 @@ public class ClientHandler implements Runnable {
         bootstrapServer.getEventLog().info("DISCOVER", message.getSender(), "Peer list requested");
         String peerList = registry.getPeerListJson();
         send(ProtocolHandler.createPeerList(peerList));
+    }
+
+    private void handleResolveMailbox() {
+        String endpoint = bootstrapServer.getMailboxHost() + ":" + bootstrapServer.getMailboxPort();
+        Message response = Message.builder()
+                .type(MessageType.RESOLVE_MAILBOX_ACK.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender("bootstrap")
+                .content(endpoint)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        send(response);
     }
 
     private void handleStoreMessage(Message message) {

@@ -71,3 +71,24 @@ CREATE TABLE IF NOT EXISTS file_chunks (
     status TEXT DEFAULT 'PARTIAL',
     PRIMARY KEY (transfer_id, chunk_index)
 );
+
+-- Durable sender outbox for store-and-forward retry
+CREATE TABLE IF NOT EXISTS outbound_messages (
+    message_id TEXT PRIMARY KEY,
+    receiver TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempt_count INTEGER DEFAULT 0,
+    direct_attempt_count INTEGER DEFAULT 0,
+    mailbox_attempt_count INTEGER DEFAULT 0,
+    next_retry_at BIGINT DEFAULT 0,
+    last_attempt_at BIGINT DEFAULT 0,
+    first_failure_at BIGINT DEFAULT 0,
+    failure_code TEXT,
+    last_error TEXT,
+    mailbox_host TEXT,
+    mailbox_port INTEGER,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);

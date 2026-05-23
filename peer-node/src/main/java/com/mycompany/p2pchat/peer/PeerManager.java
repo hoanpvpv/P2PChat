@@ -20,6 +20,7 @@ public class PeerManager {
     private final GroupCache groupCache;
     private final LamportClock lamportClock;
     private final RecentPeersCache recentPeersCache;
+    private final com.mycompany.p2pchat.database.OutboxRepository outboxRepository;
     private LazyRepairManager lazyRepairManager;
     private final com.mycompany.p2pchat.filetransfer.FileTransferManager fileTransferManager;
     private CoordinatorManager coordinatorManager;
@@ -35,6 +36,10 @@ public class PeerManager {
     private volatile boolean registeredToBootstrap;
     private volatile String lastBootstrapError;
     private volatile long lastHeartbeatSuccess = 0;
+    private String mailboxHost = com.mycompany.p2pchat.utils.Constants.DEFAULT_MAILBOX_HOST;
+    private int mailboxPort = com.mycompany.p2pchat.utils.Constants.DEFAULT_MAILBOX_PORT;
+    private String localPublicKey;
+    private String localKeyId;
 
     public PeerManager(String dbName) {
         this.dbManager = new DatabaseManager(dbName);
@@ -43,6 +48,7 @@ public class PeerManager {
         this.groupCache = new GroupCache();
         this.lamportClock = new LamportClock();
         this.recentPeersCache = new RecentPeersCache(dbManager);
+        this.outboxRepository = new com.mycompany.p2pchat.database.OutboxRepository(dbManager);
         this.fileTransferManager = new com.mycompany.p2pchat.filetransfer.FileTransferManager(this);
     }
 
@@ -59,6 +65,8 @@ public class PeerManager {
             existing.setPort(peer.getPort());
             existing.setOnline(true);
             existing.setLastHeartbeat(System.currentTimeMillis());
+            existing.setPublicKey(peer.getPublicKey());
+            existing.setKeyId(peer.getKeyId());
         } else {
             knownPeers.put(peer.getUsername(), peer);
         }
@@ -89,12 +97,16 @@ public class PeerManager {
             String[] parts = entry.split("@");
             if (parts.length != 2) continue;
             String username = parts[0].trim();
-            String[] addr = parts[1].split(":");
+            String[] keyParts = parts[1].split("\\|", -1);
+            String[] addr = keyParts[0].split(":");
             if (addr.length != 2) continue;
             int port;
             try { port = Integer.parseInt(addr[1].trim()); } catch (NumberFormatException e) { continue; }
             if (!username.equals(localUsername)) {
-                addKnownPeer(new PeerInfo(username, addr[0].trim(), port));
+                PeerInfo peer = new PeerInfo(username, addr[0].trim(), port);
+                if (keyParts.length > 1 && !keyParts[1].isBlank()) peer.setKeyId(keyParts[1]);
+                if (keyParts.length > 2 && !keyParts[2].isBlank()) peer.setPublicKey(keyParts[2]);
+                addKnownPeer(peer);
             }
         }
     }
@@ -189,6 +201,19 @@ public class PeerManager {
     public boolean isRegisteredToBootstrap() { return registeredToBootstrap; }
     public String getLastBootstrapError() { return lastBootstrapError; }
     public com.mycompany.p2pchat.filetransfer.FileTransferManager getFileTransferManager() { return fileTransferManager; }
+    public com.mycompany.p2pchat.database.OutboxRepository getOutboxRepository() { return outboxRepository; }
+
+    public String getMailboxHost() { return mailboxHost; }
+    public void setMailboxHost(String mailboxHost) { this.mailboxHost = mailboxHost; }
+
+    public int getMailboxPort() { return mailboxPort; }
+    public void setMailboxPort(int mailboxPort) { this.mailboxPort = mailboxPort; }
+
+    public String getLocalPublicKey() { return localPublicKey; }
+    public void setLocalPublicKey(String localPublicKey) { this.localPublicKey = localPublicKey; }
+
+    public String getLocalKeyId() { return localKeyId; }
+    public void setLocalKeyId(String localKeyId) { this.localKeyId = localKeyId; }
 
     public void shutdown() { dbManager.close(); }
 }
