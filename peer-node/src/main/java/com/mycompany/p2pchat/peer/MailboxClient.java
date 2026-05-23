@@ -41,6 +41,42 @@ public class MailboxClient {
         return store(message, payload, payloadHash(payload));
     }
 
+    public boolean storeGroup(Message message, String payloadJson, String payloadHash,
+                              String groupId, java.util.List<String> members) throws IOException {
+        MailboxEnvelope envelope = new MailboxEnvelope();
+        envelope.messageId = message.getMessageId();
+        envelope.conversationId = "group:" + groupId;
+        envelope.sender = message.getSender();
+        envelope.receiver = "";
+        envelope.type = message.getType();
+        // Group hiện chưa có shared group key → lưu plaintext payload. Tương lai có thể bổc với sender-key.
+        envelope.payloadCiphertext = payloadJson;
+        envelope.payloadHash = payloadHash;
+        envelope.clientCreatedAt = message.getTimestamp() > 0 ? message.getTimestamp() : System.currentTimeMillis();
+        envelope.expiresAt = System.currentTimeMillis() + DEFAULT_TTL_MS;
+        envelope.senderPublicKey = peerManager.getLocalPublicKey();
+        envelope.senderKeyId = peerManager.getLocalKeyId();
+        envelope.algorithm = "PLAINTEXT-DEMO";
+        envelope.groupId = groupId;
+        envelope.groupMembers = String.join(",", members);
+
+        Message wire = Message.builder()
+                .type(MessageType.STORE_MESSAGE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver("__group__")
+                .content(GSON.toJson(envelope))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        Message response = send(wire);
+        if (response == null) return false;
+        if (MessageType.ERROR.name().equals(response.getType())) {
+            throw new IOException(response.getContent());
+        }
+        return MessageType.STORE_ACK.name().equals(response.getType());
+    }
+
     public boolean store(Message message, String payloadJson, String payloadHash) throws IOException {
         PeerInfo receiverPeer = peerManager.getPeer(message.getReceiver());
         if (receiverPeer == null || receiverPeer.getPublicKey() == null || receiverPeer.getPublicKey().isBlank()

@@ -129,10 +129,14 @@ public class MailboxServer {
         if (env == null) throw new IllegalArgumentException("Missing envelope");
         if (isBlank(env.messageId)) throw new IllegalArgumentException("Missing messageId");
         if (isBlank(env.sender)) throw new IllegalArgumentException("Missing sender");
-        if (isBlank(env.receiver)) throw new IllegalArgumentException("Missing receiver");
         if (isBlank(env.type)) throw new IllegalArgumentException("Missing type");
         if (isBlank(env.payloadCiphertext)) throw new IllegalArgumentException("Missing payloadCiphertext");
         if (isBlank(env.payloadHash)) throw new IllegalArgumentException("Missing payloadHash");
+        boolean hasGroup = !isBlank(env.groupId) && !isBlank(env.groupMembers);
+        boolean hasReceiver = !isBlank(env.receiver);
+        if (!hasGroup && !hasReceiver) {
+            throw new IllegalArgumentException("Envelope must have receiver or (groupId + groupMembers)");
+        }
     }
 
     private boolean isBlank(String value) {

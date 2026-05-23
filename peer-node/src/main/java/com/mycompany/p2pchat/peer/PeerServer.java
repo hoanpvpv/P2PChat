@@ -99,6 +99,11 @@ public class PeerServer {
                 case TYPING          -> handleTyping(msg);
                 case OFFLINE_MESSAGE -> { handleOfflineMessage(msg); }
 
+                // ── Group history gossip ──
+                case GROUP_HISTORY_DIGEST   -> handleGroupHistoryDigest(msg, socket);
+                case GROUP_HISTORY_REQUEST  -> handleGroupHistoryRequest(msg, socket);
+                case GROUP_HISTORY_RESPONSE -> handleGroupHistoryResponse(msg);
+
                 // ── Peer events from Bootstrap ──
                 case PEER_JOIN  -> handlePeerJoin(msg);
                 case PEER_LEAVE -> handlePeerLeave(msg);
@@ -226,6 +231,121 @@ public class PeerServer {
 
     // ─────────────────────── Peer Events ───────────────────────
 
+    private void gossipGroupHistoryTo(String peerUsername, String peerHost, int peerPort) {
+        // Cho mỗi group ta cùng tham gia với peer mới: gửi digest các messageId trong 24h gần nhất.
+        long since = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+        for (GroupCache.GroupCacheEntry entry : peerManager.getGroupCache().getAllEntries()) {
+            PeerInfo peer = peerManager.getPeer(peerUsername);
+            String addr = peer != null ? (peer.getHost() + ":" + peer.getPort()) : (peerHost + ":" + peerPort);
+            if (!entry.getMembers().contains(addr)) continue;
+            List<String> ids = peerManager.getMessageRepository()
+                    .getRecentGroupMessageIds(entry.getGroupName(), since);
+            if (ids.isEmpty()) continue;
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("groupId", entry.getGroupId());
+            payload.put("messageIds", ids);
+            Message digest = Message.builder()
+                    .type(MessageType.GROUP_HISTORY_DIGEST.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .groupId(entry.getGroupId())
+                    .groupName(entry.getGroupName())
+                    .content(new com.google.gson.Gson().toJson(payload))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            sendToPeer(digest, peerHost, peerPort);
+        }
+    }
+
+    private boolean sendToPeer(Message message, String host, int port) {
+        try (Socket sock = new Socket()) {
+            sock.connect(new java.net.InetSocketAddress(host, port), 3000);
+            sock.setSoTimeout(3000);
+            java.io.PrintWriter out = new java.io.PrintWriter(sock.getOutputStream(), true);
+            out.println(JsonUtil.toJson(message));
+            out.flush();
+            return true;
+        } catch (Exception e) {
+            logger.fine("sendToPeer fail " + host + ":" + port + " " + e.getMessage());
+            return false;
+        }
+    }
+
+    private void handleGroupHistoryDigest(Message msg, Socket socket) {
+        try {
+            Map<?, ?> body = new com.google.gson.Gson().fromJson(msg.getContent(), Map.class);
+            if (body == null || body.get("messageIds") == null) return;
+            List<String> remoteIds = (List<String>) body.get("messageIds");
+            List<String> missing = new java.util.ArrayList<>();
+            for (String id : remoteIds) {
+                if (!peerManager.getMessageRepository().messageExists(id)) missing.add(id);
+            }
+            if (missing.isEmpty()) return;
+            PeerInfo sender = peerManager.getPeer(msg.getSender());
+            if (sender == null) { logger.fine("Digest: unknown sender " + msg.getSender()); return; }
+            Map<String, Object> req = new HashMap<>();
+            req.put("groupId", body.get("groupId"));
+            req.put("messageIds", missing);
+            Message reqMsg = Message.builder()
+                    .type(MessageType.GROUP_HISTORY_REQUEST.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .content(new com.google.gson.Gson().toJson(req))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            sendToPeer(reqMsg, sender.getHost(), sender.getPort());
+        } catch (Exception e) {
+            logger.fine("Bad digest: " + e.getMessage());
+        }
+    }
+
+    private void handleGroupHistoryRequest(Message msg, Socket socket) {
+        try {
+            Map<?, ?> body = new com.google.gson.Gson().fromJson(msg.getContent(), Map.class);
+            if (body == null || body.get("messageIds") == null) return;
+            List<String> requestedIds = (List<String>) body.get("messageIds");
+            List<Message> messages = peerManager.getMessageRepository().getMessagesByIds(requestedIds);
+            PeerInfo sender = peerManager.getPeer(msg.getSender());
+            if (sender == null) { logger.fine("Request: unknown sender " + msg.getSender()); return; }
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("groupId", body.get("groupId"));
+            resp.put("messages", messages);
+            Message respMsg = Message.builder()
+                    .type(MessageType.GROUP_HISTORY_RESPONSE.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .content(new com.google.gson.Gson().toJson(resp))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            sendToPeer(respMsg, sender.getHost(), sender.getPort());
+        } catch (Exception e) {
+            logger.fine("Bad request: " + e.getMessage());
+        }
+    }
+
+    private void handleGroupHistoryResponse(Message msg) {
+        try {
+            Map<?, ?> body = new com.google.gson.Gson().fromJson(msg.getContent(), Map.class);
+            if (body == null || body.get("messages") == null) return;
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            String msgsJson = gson.toJson(body.get("messages"));
+            Message[] msgs = gson.fromJson(msgsJson, Message[].class);
+            for (Message m : msgs) {
+                if (m == null || m.getMessageId() == null) continue;
+                if (peerManager.getMessageRepository().messageExists(m.getMessageId())) continue;
+                peerManager.getMessageRepository().saveMessage(m);
+                broadcastWs("GROUP_MESSAGE", messageToMap(m));
+                // Báo mailbox tự nhận để mailbox count ack (chỉ áp dụng cho group msg gốc từ mailbox).
+                try {
+                    if (peerClient != null) peerClient.gossipAckToMailbox(m.getMessageId());
+                } catch (Exception ignored) {}
+            }
+            logger.info("Imported " + msgs.length + " group msgs via gossip from " + msg.getSender());
+        } catch (Exception e) {
+            logger.fine("Bad response: " + e.getMessage());
+        }
+    }
+
     private void handlePeerJoin(Message msg) {
         String[] keyParts = msg.getContent().split("\\|", -1);
         String[] parts = keyParts[0].split(":");
@@ -251,6 +371,11 @@ public class PeerServer {
                     }
                 }, "outbox-replay-" + msg.getSender()).start();
             }
+            // Gossip group history với peer mới online (sau 2s để peer đó kịp setup).
+            new Thread(() -> {
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { return; }
+                gossipGroupHistoryTo(msg.getSender(), parts[0], Integer.parseInt(parts[1]));
+            }, "gossip-" + msg.getSender()).start();
         }
     }
 
@@ -572,6 +697,10 @@ public class PeerServer {
 
     private void broadcastWs(String type, Object data) {
         if (webServer != null) webServer.broadcastToWeb(type, data);
+    }
+
+    public void broadcastIncoming(String type, Message msg) {
+        broadcastWs(type, messageToMap(msg));
     }
 
     public void broadcastOutboxUpdate(String messageId, String state, String receiver) {

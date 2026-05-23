@@ -168,12 +168,32 @@ public class PeerClient {
                 boolean alreadyHad = peerManager.getMessageRepository().messageExists(message.getMessageId());
                 peerManager.getMessageRepository().saveMessage(message);
                 mailboxClient.deliveryAck(message.getMessageId());
-                if (!alreadyHad) delivered.add(message);
+                if (!alreadyHad) {
+                    delivered.add(message);
+                    notifyMessageToWeb(message);
+                }
             }
         } catch (Exception e) {
             logger.fine("Mailbox pull failed: " + e.getMessage());
         }
         return delivered;
+    }
+
+    public void gossipAckToMailbox(String messageId) {
+        try { mailboxClient.deliveryAck(messageId); }
+        catch (Exception e) { logger.fine("gossip ack fail: " + e.getMessage()); }
+    }
+
+    private void notifyMessageToWeb(Message message) {
+        var server = peerManager.getPeerServer();
+        if (server == null) return;
+        try {
+            if (MessageType.GROUP_MESSAGE.name().equals(message.getType())) {
+                server.broadcastIncoming("GROUP_MESSAGE", message);
+            } else if (MessageType.DIRECT_MESSAGE.name().equals(message.getType())) {
+                server.broadcastIncoming("DIRECT_MESSAGE", message);
+            }
+        } catch (Exception ignored) {}
     }
 
     // ==================== Group Message (Data Plane) ====================
@@ -206,21 +226,52 @@ public class PeerClient {
 
         boolean allSent = true;
         String myAddress = peerManager.getLocalAddress();
+        java.util.List<String> missedMemberUsernames = new java.util.ArrayList<>();
         for (String memberAddress : cache.getMembers()) {
             if (memberAddress.equals(myAddress)) continue;
             String[] parts = memberAddress.split(":");
             if (parts.length != 2) continue;
+            String memberHost = parts[0];
+            int memberPort;
+            try { memberPort = Integer.parseInt(parts[1]); }
+            catch (NumberFormatException e) { continue; }
+
+            boolean delivered = false;
+            try { delivered = sendSingle(message, memberHost, memberPort); }
+            catch (Exception ignored) {}
+
+            if (!delivered) {
+                allSent = false;
+                String memberUsername = resolveUsernameFromAddress(memberAddress);
+                if (memberUsername != null && !memberUsername.isBlank()) {
+                    missedMemberUsernames.add(memberUsername);
+                }
+                peerManager.getLazyRepairManager().repair(groupId);
+            }
+        }
+
+        if (!missedMemberUsernames.isEmpty()) {
             try {
-                if (!sendSingle(message, parts[0], Integer.parseInt(parts[1]))) {
-                    allSent = false;
-                    // Trigger lazy repair (TCP fail)
-                    peerManager.getLazyRepairManager().repair(groupId);
+                String payloadJson = mailboxClient.payloadJson(message);
+                String payloadHash = mailboxClient.payloadHash(payloadJson);
+                boolean stored = mailboxClient.storeGroup(message, payloadJson, payloadHash,
+                        groupId, missedMemberUsernames);
+                if (stored) {
+                    logger.info("Group msg " + message.getMessageId() + " stored to mailbox for "
+                            + missedMemberUsernames);
                 }
             } catch (Exception e) {
-                allSent = false;
+                logger.warning("Failed to store group msg to mailbox: " + e.getMessage());
             }
         }
         return allSent;
+    }
+
+    private String resolveUsernameFromAddress(String address) {
+        for (var p : peerManager.getAllKnownPeers()) {
+            if (address.equals(p.getHost() + ":" + p.getPort())) return p.getUsername();
+        }
+        return null;
     }
 
     // ==================== Coordinator Requests with Fallback ====================

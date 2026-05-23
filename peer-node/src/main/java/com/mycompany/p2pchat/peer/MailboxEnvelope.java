@@ -20,4 +20,6 @@ public class MailboxEnvelope {
     public String algorithm = "PLAINTEXT-DEMO";
     public String nonce;
     public int schemaVersion = 1;
+    public String groupId;
+    public String groupMembers;
 }

@@ -36,6 +36,35 @@ public class MessageRepository {
         }
     }
 
+    public List<String> getRecentGroupMessageIds(String groupName, long sinceMillis) {
+        List<String> ids = new ArrayList<>();
+        String sql = "SELECT message_id FROM messages WHERE group_name = ? AND type = 'GROUP_MESSAGE' AND timestamp >= ? ORDER BY timestamp ASC";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setString(1, groupName);
+            ps.setLong(2, sinceMillis);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) ids.add(rs.getString("message_id"));
+        } catch (SQLException e) {
+            logger.severe("Failed to load recent group msg ids: " + e.getMessage());
+        }
+        return ids;
+    }
+
+    public List<Message> getMessagesByIds(List<String> ids) {
+        List<Message> out = new ArrayList<>();
+        if (ids == null || ids.isEmpty()) return out;
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        String sql = "SELECT * FROM messages WHERE message_id IN (" + placeholders + ")";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            for (int i = 0; i < ids.size(); i++) ps.setString(i + 1, ids.get(i));
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) out.add(mapResultSetToMessage(rs));
+        } catch (SQLException e) {
+            logger.severe("Failed to load messages by ids: " + e.getMessage());
+        }
+        return out;
+    }
+
     public List<String> getDirectChatPartners(String me) {
         List<String> partners = new ArrayList<>();
         if (me == null || me.isBlank()) return partners;

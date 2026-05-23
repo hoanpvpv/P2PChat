@@ -20,6 +20,8 @@ public class MailboxEnvelope {
     public String algorithm;
     public String nonce;
     public int schemaVersion = 1;
+    public String groupId;
+    public String groupMembers;   // CSV danh sách member tại thời điểm gửi
 
     public void applyDefaults(long ttlMillis) {
         long now = System.currentTimeMillis();

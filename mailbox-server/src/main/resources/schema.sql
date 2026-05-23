@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS offline_messages (
     nonce TEXT,
     schema_version INTEGER DEFAULT 1,
     status TEXT NOT NULL,
-    delivered_at BIGINT
+    delivered_at BIGINT,
+    group_id TEXT,
+    group_members TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_offline_receiver_status
@@ -27,3 +29,17 @@ ON offline_messages(receiver, status, mailbox_stored_at);
 
 CREATE INDEX IF NOT EXISTS idx_offline_expires
 ON offline_messages(expires_at, status);
+
+CREATE INDEX IF NOT EXISTS idx_offline_group
+ON offline_messages(group_id, status);
+
+-- Per-member ack tracking cho group message.
+-- Mỗi group message có 1 row trong offline_messages, N row trong group_delivery_acks (mỗi member 1 row khi họ ACK).
+CREATE TABLE IF NOT EXISTS group_delivery_acks (
+    message_id TEXT NOT NULL,
+    member TEXT NOT NULL,
+    delivered_at BIGINT NOT NULL,
+    PRIMARY KEY (message_id, member)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_acks_msg ON group_delivery_acks(message_id);

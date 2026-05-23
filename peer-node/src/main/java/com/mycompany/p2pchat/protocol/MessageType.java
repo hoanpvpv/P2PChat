@@ -52,6 +52,11 @@ public enum MessageType {
     CACHE_STALE,
     GROUP_GET,
 
+    // Group history gossip (peer-to-peer relay for offline-period messages)
+    GROUP_HISTORY_DIGEST,
+    GROUP_HISTORY_REQUEST,
+    GROUP_HISTORY_RESPONSE,
+
     // File Transfer
     FILE_OFFER,
     FILE_ACCEPT,
