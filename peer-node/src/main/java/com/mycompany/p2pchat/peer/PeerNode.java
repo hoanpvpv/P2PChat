@@ -208,6 +208,7 @@ public class PeerNode {
             while (running) {
                 try {
                     Thread.sleep(5000);
+                    peerClient.retryMailboxOutbox();
                     peerClient.retryOutboxDelivery();
                     peerManager.getOutboxRepository().cleanupDeliveredOlderThan(
                             System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);

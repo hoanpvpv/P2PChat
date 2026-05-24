@@ -14,7 +14,7 @@ function formatDate(ts) {
   return d.toLocaleDateString();
 }
 
-function renderDeliveryState(state) {
+function renderDeliveryState(state, msg = {}) {
   switch (state) {
     case 'DELIVERED_DIRECT':
     case 'DELIVERED':
@@ -23,6 +23,15 @@ function renderDeliveryState(state) {
       return ' 📬 Đã lưu mailbox';
     case 'QUEUED_LOCAL':
     case 'FAILED_RETRYABLE':
+      if (msg.failureCode === 'ERR_MAILBOX_SEND' && /Missing E2EE public key/i.test(msg.deliveryError || '')) {
+        return ' 🔑 Chờ public key để lưu mailbox';
+      }
+      if (msg.failureCode === 'ERR_MAILBOX_SEND') {
+        return ' 📬 Chưa lưu mailbox, sẽ thử lại';
+      }
+      if (msg.failureCode === 'ERR_DIRECT_SEND') {
+        return ' 📬 Đang chuyển sang mailbox';
+      }
       return ' ⏳ Đang chờ retry';
     case 'DEAD_LETTER':
       return ' ❌ Giao thất bại';
@@ -188,7 +197,7 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
                       {formatTime(msg.timestamp)}
                       {isSent && msg.deliveryState && (
                         <span className={`delivery-state ds-${msg.deliveryState}`}>
-                          {renderDeliveryState(msg.deliveryState)}
+                          {renderDeliveryState(msg.deliveryState, msg)}
                         </span>
                       )}
                     </div>

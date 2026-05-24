@@ -111,8 +111,7 @@ public class PeerRegistry {
     }
 
     public String getPeerListJson() {
-        List<PeerInfo> online = getOnlinePeers();
-        return online.stream()
+        return peers.values().stream()
                 .map(this::peerListEntry)
                 .collect(Collectors.joining(","));
     }
@@ -123,6 +122,7 @@ public class PeerRegistry {
                 && p.getPublicKey() != null && !p.getPublicKey().isBlank()) {
             entry += "|" + p.getKeyId() + "|" + p.getPublicKey();
         }
+        entry += "|" + (p.isOnline() ? "online" : "offline");
         return entry;
     }
 

@@ -14,17 +14,8 @@ public class MailboxRepository {
     }
 
     public StoreResult store(MailboxEnvelope env) throws SQLException {
-        try (PreparedStatement existing = database.getConnection().prepareStatement(
-                "SELECT payload_hash FROM offline_messages WHERE message_id = ?")) {
-            existing.setString(1, env.messageId);
-            ResultSet rs = existing.executeQuery();
-            if (rs.next()) {
-                String oldHash = rs.getString("payload_hash");
-                return oldHash != null && oldHash.equals(env.payloadHash)
-                        ? StoreResult.DUPLICATE
-                        : StoreResult.CONFLICT;
-            }
-        }
+        StoreResult existingResult = existingStoreResult(env.messageId, env.payloadHash);
+        if (existingResult != null) return existingResult;
 
         String sql = """
                 INSERT INTO offline_messages (
@@ -58,8 +49,36 @@ public class MailboxRepository {
             ps.setString(20, env.groupId);
             ps.setString(21, env.groupMembers);
             ps.executeUpdate();
+        } catch (SQLException e) {
+            if (isConstraintViolation(e)) {
+                StoreResult racedResult = existingStoreResult(env.messageId, env.payloadHash);
+                if (racedResult != null) return racedResult;
+            }
+            throw e;
         }
         return StoreResult.STORED;
+    }
+
+    private StoreResult existingStoreResult(String messageId, String payloadHash) throws SQLException {
+        try (PreparedStatement existing = database.getConnection().prepareStatement(
+                "SELECT payload_hash FROM offline_messages WHERE message_id = ?")) {
+            existing.setString(1, messageId);
+            ResultSet rs = existing.executeQuery();
+            if (rs.next()) {
+                String oldHash = rs.getString("payload_hash");
+                return oldHash != null && oldHash.equals(payloadHash)
+                        ? StoreResult.DUPLICATE
+                        : StoreResult.CONFLICT;
+            }
+        }
+        return null;
+    }
+
+    private boolean isConstraintViolation(SQLException e) {
+        String state = e.getSQLState();
+        String message = e.getMessage();
+        return "23000".equals(state)
+                || (message != null && message.toLowerCase().contains("constraint"));
     }
 
     public List<MailboxEnvelope> pull(String receiver, int limit) throws SQLException {

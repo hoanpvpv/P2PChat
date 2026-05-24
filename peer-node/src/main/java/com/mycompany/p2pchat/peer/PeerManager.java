@@ -5,11 +5,18 @@ import com.mycompany.p2pchat.database.MessageRepository;
 import com.mycompany.p2pchat.model.ChatGroup;
 import static com.mycompany.p2pchat.utils.Constants.HEARTBEAT_RESUME_THRESHOLD;
 import com.mycompany.p2pchat.model.PeerInfo;
+import com.mycompany.p2pchat.utils.LoggerUtil;
 
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 
 public class PeerManager {
+
+    private static final Logger logger = LoggerUtil.getLogger(PeerManager.class.getName());
 
     private final Map<String, PeerInfo> knownPeers = new ConcurrentHashMap<>();
     private final Map<String, ChatGroup> chatGroups = new ConcurrentHashMap<>();  // legacy, kept for CLI compat
@@ -50,6 +57,7 @@ public class PeerManager {
         this.recentPeersCache = new RecentPeersCache(dbManager);
         this.outboxRepository = new com.mycompany.p2pchat.database.OutboxRepository(dbManager);
         this.fileTransferManager = new com.mycompany.p2pchat.filetransfer.FileTransferManager(this);
+        loadKnownPeersFromDb();
     }
 
     // ==================== Peer State ====================
@@ -59,22 +67,32 @@ public class PeerManager {
     }
 
     public void addKnownPeer(PeerInfo peer) {
+        if (peer == null || peer.getUsername() == null || peer.getUsername().isBlank()) return;
+        if (peer.getUsername().equals(localUsername)) return;
         PeerInfo existing = knownPeers.get(peer.getUsername());
         if (existing != null) {
             existing.setHost(peer.getHost());
             existing.setPort(peer.getPort());
-            existing.setOnline(true);
+            existing.setOnline(peer.isOnline());
             existing.setLastHeartbeat(System.currentTimeMillis());
-            existing.setPublicKey(peer.getPublicKey());
-            existing.setKeyId(peer.getKeyId());
+            if (!isBlank(peer.getPublicKey())) existing.setPublicKey(peer.getPublicKey());
+            if (!isBlank(peer.getKeyId())) existing.setKeyId(peer.getKeyId());
+            persistKnownPeer(existing);
         } else {
+            peer.setLastHeartbeat(System.currentTimeMillis());
             knownPeers.put(peer.getUsername(), peer);
+            persistKnownPeer(peer);
         }
     }
 
     public void removeKnownPeer(String username) {
         PeerInfo peer = knownPeers.get(username);
-        if (peer != null) peer.setOnline(false);
+        if (peer != null) {
+            peer.setOnline(false);
+            persistKnownPeer(peer);
+        } else if (username != null && !username.isBlank()) {
+            markKnownPeerOffline(username);
+        }
     }
 
     public PeerInfo getPeer(String username) {
@@ -90,7 +108,10 @@ public class PeerManager {
     }
 
     public void parsePeerList(String peerListStr) {
-        knownPeers.values().forEach(peer -> peer.setOnline(false));
+        knownPeers.values().forEach(peer -> {
+            peer.setOnline(false);
+            persistKnownPeer(peer);
+        });
         if (peerListStr == null || peerListStr.isEmpty()) return;
         for (String entry : peerListStr.split(",")) {
             if (entry.trim().isEmpty()) continue;
@@ -106,6 +127,7 @@ public class PeerManager {
                 PeerInfo peer = new PeerInfo(username, addr[0].trim(), port);
                 if (keyParts.length > 1 && !keyParts[1].isBlank()) peer.setKeyId(keyParts[1]);
                 if (keyParts.length > 2 && !keyParts[2].isBlank()) peer.setPublicKey(keyParts[2]);
+                if (keyParts.length > 3 && "offline".equalsIgnoreCase(keyParts[3].trim())) peer.setOnline(false);
                 addKnownPeer(peer);
             }
         }
@@ -160,6 +182,65 @@ public class PeerManager {
 
     public void clearKnownPeers() {
         knownPeers.clear();
+        loadKnownPeersFromDb();
+    }
+
+    private void loadKnownPeersFromDb() {
+        String sql = "SELECT username, host, port, online, key_id, public_key, last_seen FROM known_peers";
+        try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql);
+             ResultSet rs = pstmt.executeQuery()) {
+            while (rs.next()) {
+                String username = rs.getString("username");
+                if (username == null || username.isBlank() || username.equals(localUsername)) continue;
+                PeerInfo peer = new PeerInfo(username, rs.getString("host"), rs.getInt("port"));
+                peer.setOnline(rs.getInt("online") == 1);
+                peer.setKeyId(rs.getString("key_id"));
+                peer.setPublicKey(rs.getString("public_key"));
+                peer.setLastHeartbeat(rs.getLong("last_seen"));
+                knownPeers.put(username, peer);
+            }
+        } catch (SQLException e) {
+            logger.fine("Load known peers failed: " + e.getMessage());
+        }
+    }
+
+    private void persistKnownPeer(PeerInfo peer) {
+        if (peer == null || peer.getUsername() == null || peer.getUsername().isBlank()) return;
+        if (peer.getUsername().equals(localUsername)) return;
+        String sql = "INSERT INTO known_peers (username, host, port, online, key_id, public_key, last_seen) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT(username) DO UPDATE SET " +
+                "host=excluded.host, port=excluded.port, online=excluded.online, " +
+                "key_id=COALESCE(NULLIF(excluded.key_id, ''), known_peers.key_id), " +
+                "public_key=COALESCE(NULLIF(excluded.public_key, ''), known_peers.public_key), " +
+                "last_seen=excluded.last_seen";
+        try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
+            pstmt.setString(1, peer.getUsername());
+            pstmt.setString(2, peer.getHost() == null ? "" : peer.getHost());
+            pstmt.setInt(3, peer.getPort());
+            pstmt.setInt(4, peer.isOnline() ? 1 : 0);
+            pstmt.setString(5, peer.getKeyId() == null ? "" : peer.getKeyId());
+            pstmt.setString(6, peer.getPublicKey() == null ? "" : peer.getPublicKey());
+            pstmt.setLong(7, System.currentTimeMillis());
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            logger.fine("Persist known peer failed for " + peer.getUsername() + ": " + e.getMessage());
+        }
+    }
+
+    private void markKnownPeerOffline(String username) {
+        String sql = "UPDATE known_peers SET online = 0, last_seen = ? WHERE username = ?";
+        try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
+            pstmt.setLong(1, System.currentTimeMillis());
+            pstmt.setString(2, username);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            logger.fine("Mark known peer offline failed for " + username + ": " + e.getMessage());
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     // ==================== Getters/Setters ====================

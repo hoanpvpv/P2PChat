@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS known_peers (
     username TEXT NOT NULL UNIQUE,
     host TEXT NOT NULL,
     port INTEGER NOT NULL,
-    online INTEGER DEFAULT 0
+    online INTEGER DEFAULT 0,
+    key_id TEXT,
+    public_key TEXT,
+    last_seen BIGINT DEFAULT 0
 );
 
 -- DHT-lite group cache (Data Plane)

@@ -38,6 +38,7 @@ public class DatabaseInitializer {
                 }
             }
             stmt.close();
+            migrateKnownPeers(connection);
             migrateOutbox(connection);
             logger.info("Database schema initialized");
         } catch (SQLException | IOException e) {
@@ -51,6 +52,12 @@ public class DatabaseInitializer {
         addColumnIfMissing(connection, "outbound_messages", "last_attempt_at", "BIGINT DEFAULT 0");
         addColumnIfMissing(connection, "outbound_messages", "first_failure_at", "BIGINT DEFAULT 0");
         addColumnIfMissing(connection, "outbound_messages", "failure_code", "TEXT");
+    }
+
+    private static void migrateKnownPeers(Connection connection) throws SQLException {
+        addColumnIfMissing(connection, "known_peers", "key_id", "TEXT");
+        addColumnIfMissing(connection, "known_peers", "public_key", "TEXT");
+        addColumnIfMissing(connection, "known_peers", "last_seen", "BIGINT DEFAULT 0");
     }
 
     private static void addColumnIfMissing(Connection connection, String table, String column, String type) throws SQLException {

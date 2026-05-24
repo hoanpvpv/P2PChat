@@ -99,9 +99,14 @@ export default function App() {
       if (chat.type === 'peer') {
         try {
           const outbox = await fetchOutbox();
-          const stateById = new Map((outbox || []).map(e => [e.messageId, e.state]));
-          msgs = msgs.map(m => stateById.has(m.messageId)
-            ? { ...m, deliveryState: stateById.get(m.messageId) }
+          const outboxById = new Map((outbox || []).map(e => [e.messageId, e]));
+          msgs = msgs.map(m => outboxById.has(m.messageId)
+            ? {
+                ...m,
+                deliveryState: outboxById.get(m.messageId).state,
+                failureCode: outboxById.get(m.messageId).failureCode,
+                deliveryError: outboxById.get(m.messageId).lastError,
+              }
             : m);
         } catch (e) { /* best-effort */ }
       }
@@ -150,7 +155,9 @@ export default function App() {
 
         case 'OUTBOX_UPDATE':
           setMessages(prev => prev.map(m =>
-            m.messageId === data.messageId ? { ...m, deliveryState: data.state } : m
+            m.messageId === data.messageId
+              ? { ...m, deliveryState: data.state, failureCode: data.failureCode, deliveryError: data.error }
+              : m
           ));
           break;
 
