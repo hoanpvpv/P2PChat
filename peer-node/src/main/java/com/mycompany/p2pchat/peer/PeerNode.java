@@ -205,9 +205,18 @@ public class PeerNode {
         if (mailboxRetryStarted) return;
         mailboxRetryStarted = true;
         Thread retry = new Thread(() -> {
+            int tick = 0;
             while (running) {
                 try {
                     Thread.sleep(5000);
+                    tick++;
+                    // Re-resolve mailbox endpoint every ~30s so peers recover if the
+                    // bootstrap-advertised endpoint changes (e.g. infra reconfigured,
+                    // or a remote peer was given a Docker-DNS-only address and the
+                    // bootstrap later started advertising a host-reachable IP).
+                    if (tick % 6 == 0 && peerManager.isRegisteredToBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                    }
                     peerClient.retryMailboxOutbox();
                     peerClient.retryOutboxDelivery();
                     peerManager.getOutboxRepository().cleanupDeliveredOlderThan(

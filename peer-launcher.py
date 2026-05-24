@@ -19,6 +19,8 @@ PEER_IMG = "p2pchat-peer"
 BOOTSTRAP_PORT = 9000
 DASHBOARD_PORT = 9001
 MAILBOX_PORT = 9100
+LAUNCHER_HOST = "127.0.0.1"
+LAUNCHER_PORT = 9200
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
@@ -67,6 +69,11 @@ def ensure_bootstrap():
     ensure_mailbox()
     run(["docker", "rm", "-f", "bootstrap"], check=False)
     (ROOT / "data" / "bootstrap").mkdir(parents=True, exist_ok=True)
+    # Bootstrap reports this address to peers via RESOLVE_MAILBOX. Docker DNS name
+    # ("mailbox:9100") only resolves inside p2p-net; remote peers (Tailscale/LAN)
+    # need a host-reachable IP. Prefer Tailscale, fall back to LAN, else Docker name.
+    best_ip = pick_best_local_ip()
+    mailbox_endpoint = f"{best_ip}:{MAILBOX_PORT}" if best_ip else f"mailbox:{MAILBOX_PORT}"
     run([
         "docker", "run", "-d", "--name", "bootstrap", "--network", NETWORK,
         "-p", f"{BOOTSTRAP_PORT}:{BOOTSTRAP_PORT}",
@@ -75,7 +82,7 @@ def ensure_bootstrap():
         BOOTSTRAP_IMG,
         "--port", str(BOOTSTRAP_PORT),
         "--dashboard-port", str(DASHBOARD_PORT),
-        "--mailbox", f"mailbox:{MAILBOX_PORT}",
+        "--mailbox", mailbox_endpoint,
     ])
 
 
@@ -109,7 +116,10 @@ def port_available(port):
 
 
 def choose_web_port():
+    reserved = docker_reserved_ports()
     for port in range(33143, 60999):
+        if port in reserved or (port + 1000) in reserved or (port + 2000) in reserved:
+            continue
         if port_available(port) and port_available(port + 1000) and port_available(port + 2000):
             return port
     raise RuntimeError("No free port range found")
@@ -144,6 +154,72 @@ def local_ipv4_addresses():
                 except ValueError:
                     pass
     return addresses
+
+
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+def pick_best_local_ip():
+    """Prefer Tailscale CGNAT, then any private/usable IP, skip loopback/link-local/docker bridge."""
+    tailscale = None
+    fallback = None
+    for addr in local_ipv4_addresses():
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast:
+            continue
+        if ip in TAILSCALE_NET:
+            if tailscale is None:
+                tailscale = addr
+            continue
+        # Skip docker bridge subnets to avoid advertising container-side addresses.
+        if addr.startswith("172.17.") or addr.startswith("172.18.") or addr.startswith("172.19.") \
+                or addr.startswith("172.20.") or addr.startswith("172.21.") or addr.startswith("172.22.") \
+                or addr.startswith("172.23.") or addr.startswith("172.24.") or addr.startswith("172.25.") \
+                or addr.startswith("172.26.") or addr.startswith("172.27.") or addr.startswith("172.28.") \
+                or addr.startswith("172.29.") or addr.startswith("172.30.") or addr.startswith("172.31."):
+            continue
+        if fallback is None:
+            fallback = addr
+    return tailscale or fallback
+
+
+def docker_reserved_ports():
+    """Host ports reserved by any container (running or stopped) via -p bindings."""
+    listing = run(["docker", "ps", "-a", "--format", "{{.Names}}"], check=False)
+    if listing.returncode != 0:
+        return set()
+    reserved = set()
+    for name in listing.stdout.split():
+        name = name.strip()
+        if not name:
+            continue
+        inspect = run(["docker", "inspect", "-f", "{{json .HostConfig.PortBindings}}", name], check=False)
+        if inspect.returncode != 0:
+            continue
+        raw = inspect.stdout.strip()
+        if not raw or raw == "null":
+            continue
+        try:
+            bindings = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not bindings:
+            continue
+        for host_bindings in bindings.values():
+            if not host_bindings:
+                continue
+            for binding in host_bindings:
+                host_port = binding.get("HostPort")
+                if not host_port:
+                    continue
+                try:
+                    reserved.add(int(host_port))
+                except ValueError:
+                    pass
+    return reserved
 
 
 def endpoint_parts(value, label):
@@ -286,7 +362,10 @@ def validate_peer_request(payload):
     if advertised_host_provided:
         validate_advertised_host(advertised_host)
     elif use_local_infra:
-        advertised_host = f"peer-{username}"
+        detected = pick_best_local_ip()
+        # Container DNS name only works for peers on this host's p2p-net; advertising a
+        # real IP lets remote peers (over Tailscale/LAN) reach this peer too.
+        advertised_host = detected if detected else f"peer-{username}"
     else:
         advertised_host = detect_host_for_endpoint(bootstrap_host, bootstrap_port)
 
@@ -308,7 +387,10 @@ def validate_peer_request(payload):
     if file_port > 65535:
         raise ValueError("Web port quá lớn vì file port vượt 65535")
 
+    reserved_ports = docker_reserved_ports()
     for port in (web_port, peer_port, file_port):
+        if port in reserved_ports:
+            raise ValueError(f"Port {port} đã được container Docker khác đăng ký")
         if not port_available(port):
             raise ValueError(f"Port {port} đang được sử dụng")
 
@@ -594,8 +676,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     os.chdir(ROOT)
-    server = ThreadingHTTPServer(("127.0.0.1", 9200), Handler)
-    print("P2PChat launcher: http://localhost:9200")
+    try:
+        server = ThreadingHTTPServer((LAUNCHER_HOST, LAUNCHER_PORT), Handler)
+    except OSError as exc:
+        if exc.errno == 98:
+            print(f"Launcher is already running: http://localhost:{LAUNCHER_PORT}")
+            print("Close that launcher first, or open the URL above in your browser.")
+            return
+        raise
+    print(f"P2PChat launcher: http://localhost:{LAUNCHER_PORT}")
     print("Press Ctrl+C to stop.")
     server.serve_forever()
 
