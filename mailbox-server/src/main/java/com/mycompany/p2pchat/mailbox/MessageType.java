@@ -6,5 +6,7 @@ public enum MessageType {
     PULL_MESSAGES,
     PULL_RESPONSE,
     DELIVERY_ACK,
+    CHECK_DELIVERY,
+    CHECK_DELIVERY_RESPONSE,
     ERROR
 }

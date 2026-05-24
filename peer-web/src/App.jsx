@@ -377,9 +377,13 @@ export default function App() {
   }, [refreshData, showToast]);
 
   const handleKickFromGroup = useCallback(async (groupId, target) => {
-    await kickFromGroup(groupId, target);
-    refreshData();
-  }, [refreshData]);
+    try {
+      await kickFromGroup(groupId, target);
+      refreshData();
+    } catch (e) {
+      showToast('Failed to kick member: ' + e.message, 'error');
+    }
+  }, [refreshData, showToast]);
 
   const handleLeaveGroup = useCallback(async (groupId) => {
     await leaveGroup(groupId, null);

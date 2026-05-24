@@ -6,15 +6,74 @@ Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstra
 
 ## Hướng dẫn sử dụng nhanh
 
+### Luồng chuẩn cho máy remote sau khi pull code mới
+
+Trên máy của Hoàng hoặc bất kỳ máy remote nào:
+
+```bash
+git pull
+./run.sh build
+./run.sh launcher
+```
+
+Mở:
+
+```text
+http://localhost:9200
+```
+
+Nhập lại đúng username đang dùng, ví dụ `vhoang`. Nếu container cũ đã tồn tại, launcher sẽ recreate container bằng image mới nhưng vẫn giữ dữ liệu trong `data/peers/<username>`.
+
+Form cho máy remote:
+
+```text
+Username: vhoang
+IP máy này: để trống
+Bootstrap server: <IP_Tailscale_may_host>:9000
+Mailbox server: để trống
+Web port: để trống
+```
+
+Sau khi tạo xong, kiểm tra direct-reachable từ hai chiều:
+
+```bash
+./run.sh doctor <IP_Tailscale_may_host> 34143
+```
+
+Trên máy host cũng kiểm tra ngược lại:
+
+```bash
+./run.sh doctor <IP_Tailscale_may_remote> <peer_port_remote>
+```
+
+Direct chỉ hoạt động khi `nc ... succeeded`. Nếu `doctor` báo timeout thì app sẽ fallback mailbox vì peer online với bootstrap nhưng TCP peer port chưa reachable. Với group chat, tạo nhóm/thêm member/kick đều yêu cầu peer đích direct-reachable; nếu không, UI sẽ báo lỗi thay vì tạo nhóm lệch trạng thái.
+
 ### 1. Chuẩn bị mạng
 
 Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, dùng Tailscale để lấy IP riêng của từng máy.
 
-Cả hai máy phải nằm trong cùng Tailscale tailnet, hoặc máy host phải được share cho bạn bè:
+Cả hai máy phải nằm trong cùng Tailscale tailnet. Với chat nhóm 3 người trở lên, không dùng `Share machine` thay cho việc mời member thật:
 
 - Nếu tự test bằng nhiều thiết bị của bạn: đăng nhập cùng tài khoản Tailscale trên các thiết bị.
-- Nếu bạn bè dùng tài khoản riêng: mời email của bạn ấy vào tailnet tại `https://login.tailscale.com/admin/users`, hoặc share riêng máy host tại `https://login.tailscale.com/admin/machines`.
+- Nếu bạn bè dùng tài khoản riêng: mời email của bạn ấy vào tailnet tại `https://login.tailscale.com/admin/users`, role `Member`, sau đó admin approve nếu Tailscale yêu cầu.
+- `Share machine` chỉ cho người được share truy cập máy host. Hai người được share riêng lẻ có thể không thấy nhau, nên group chat/kick/add member dễ lỗi hoặc delay vì control-plane của nhóm cần các peer direct-reachable với nhau.
 - Sau khi tham gia Tailscale, mỗi người chạy `tailscale ip -4` để lấy IP máy của mình.
+
+Kiểm tra đã đúng tailnet member thật:
+
+```bash
+tailscale status
+```
+
+Trên máy host phải thấy đủ các máy bạn bè, ví dụ:
+
+```text
+100.120.26.95    hoanpvpv-precision-5550  hoanyugi1@             linux    -
+100.81.55.92     ducgd                    pvduc919@              windows  -
+100.107.107.126  nguyenhoang              nguyenvanhoang272004@  windows  -
+```
+
+Nếu chỉ thấy máy mình, hoặc trên máy bạn chỉ thấy host mà không thấy người thứ ba, thì chưa đủ điều kiện test group P2P.
 
 Kiểm tra từ máy bạn bè tới máy host:
 

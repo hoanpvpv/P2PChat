@@ -184,6 +184,36 @@ public class MailboxRepository {
         }
     }
 
+    /**
+     * Return the subset of {@code candidateIds} that were sent by {@code sender}
+     * and are now DELIVERED (so the sender can update its UI / outbox state).
+     * Filtering by sender prevents one peer from probing another peer's deliveries.
+     */
+    public List<String> getDeliveredMessageIds(String sender, List<String> candidateIds) throws SQLException {
+        List<String> delivered = new ArrayList<>();
+        if (sender == null || sender.isBlank() || candidateIds == null || candidateIds.isEmpty()) {
+            return delivered;
+        }
+        // Cap the batch to keep the IN clause sane.
+        int cap = Math.min(candidateIds.size(), 500);
+        StringBuilder placeholders = new StringBuilder();
+        for (int i = 0; i < cap; i++) {
+            if (i > 0) placeholders.append(',');
+            placeholders.append('?');
+        }
+        String sql = "SELECT message_id FROM offline_messages "
+                + "WHERE sender = ? AND status = 'DELIVERED' AND message_id IN (" + placeholders + ")";
+        try (PreparedStatement ps = database.getConnection().prepareStatement(sql)) {
+            ps.setString(1, sender);
+            for (int i = 0; i < cap; i++) {
+                ps.setString(i + 2, candidateIds.get(i));
+            }
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) delivered.add(rs.getString(1));
+        }
+        return delivered;
+    }
+
     private MailboxEnvelope map(ResultSet rs) throws SQLException {
         MailboxEnvelope env = new MailboxEnvelope();
         env.messageId = rs.getString("message_id");

@@ -400,10 +400,10 @@ def validate_peer_request(payload):
 def create_peer(payload):
     username, advertised_host, advertised_host_provided, bootstrap_addr, mailbox_addr, use_local_infra, web_port, peer_port, file_port = validate_peer_request(payload)
     container = f"peer-{username}"
+    recreated = False
     if container in docker_names():
-        existing = start_existing_peer(username)
-        existing["alreadyExists"] = True
-        return existing
+        run(["docker", "rm", "-f", container], check=False)
+        recreated = True
 
     ensure_network()
     if use_local_infra:
@@ -442,6 +442,7 @@ def create_peer(payload):
         "bootstrap": bootstrap_addr,
         "mailbox": mailbox_addr,
         "url": f"http://localhost:{web_port}",
+        "recreated": recreated,
     }
 
 
@@ -599,7 +600,7 @@ PAGE = """<!doctype html>
         if (!res.ok) throw new Error(data.error || 'Create peer failed');
         const username = escapeHtml(data.username);
         const url = escapeHtml(data.url);
-        const prefix = data.alreadyExists ? `@${username} đã tồn tại, đã mở lại peer.` : `Đã tạo @${username}.`;
+        const prefix = data.recreated ? `Đã cập nhật và mở lại @${username}.` : `Đã tạo @${username}.`;
         toast(`${prefix}<a class="open-link" target="_blank" href="${url}">Mở peer: ${url}</a>`);
         form.reset();
         loadExistingPeers();

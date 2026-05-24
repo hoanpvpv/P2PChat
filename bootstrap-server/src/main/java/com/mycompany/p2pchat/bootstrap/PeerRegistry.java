@@ -60,6 +60,17 @@ public class PeerRegistry {
         }
     }
 
+    public void updateAddress(String username, String host, int port) {
+        PeerInfo peer = peers.get(username);
+        if (peer != null) {
+            peer.setHost(host);
+            peer.setPort(port);
+            peer.setLastHeartbeat(System.currentTimeMillis());
+            peer.setOnline(true);
+            savePeers();
+        }
+    }
+
     public List<PeerInfo> getOnlinePeers() {
         return peers.values().stream()
                 .filter(PeerInfo::isOnline)

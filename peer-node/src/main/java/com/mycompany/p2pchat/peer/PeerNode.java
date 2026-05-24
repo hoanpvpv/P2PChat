@@ -223,6 +223,9 @@ public class PeerNode {
                             System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);
                     if (peerManager.isRegisteredToBootstrap()) {
                         pullMailboxMessagesToWeb();
+                        // Promote STORED_MAILBOX → DELIVERED for messages the receiver
+                        // has now pulled, so the sender UI stops showing them as pending.
+                        peerClient.pollMailboxDeliveries();
                     }
                 } catch (InterruptedException e) {
                     break;
