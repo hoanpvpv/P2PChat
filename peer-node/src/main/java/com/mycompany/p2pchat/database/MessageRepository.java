@@ -16,9 +16,9 @@ public class MessageRepository {
         this.dbManager = dbManager;
     }
 
-    public void saveMessage(Message msg) {
+    public boolean saveMessage(Message msg) {
         if (messageExists(msg.getMessageId())) {
-            return;
+            return false;
         }
         String sql = "INSERT INTO messages (message_id, sender, receiver, group_name, content, type, timestamp, delivered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
@@ -31,8 +31,10 @@ public class MessageRepository {
             pstmt.setLong(7, msg.getTimestamp());
             pstmt.setInt(8, 1);
             pstmt.executeUpdate();
+            return true;
         } catch (SQLException e) {
             logger.severe("Failed to save message: " + e.getMessage());
+            return false;
         }
     }
 

@@ -91,7 +91,7 @@ Nhập form:
 
 ```text
 Username: friend
-IP máy này: 100.64.1.20
+IP máy này: để trống
 Bootstrap server: 100.64.1.10:9000
 Mailbox server: để trống
 Web port: để trống
@@ -113,7 +113,8 @@ Trong Web UI, bấm refresh/discover nếu chưa thấy peer, chọn tên peer c
 
 Ghi nhớ:
 
-- `IP máy này` là IP Tailscale/ZeroTier/public của chính máy đang tạo peer.
+- `IP máy này` là tùy chọn nâng cao. Máy tham gia nên để trống; launcher sẽ tự detect IP dùng để kết nối tới bootstrap.
+- Máy host nên nhập `IP máy này` nếu muốn tự chạy bootstrap/mailbox cho máy khác truy cập.
 - Máy host để trống `Bootstrap server`.
 - Máy tham gia nhập `Bootstrap server` là `IP máy host:9000`.
 - `Web port` có thể để trống để launcher tự chọn.
@@ -362,7 +363,7 @@ Mở:
 http://localhost:9200
 ```
 
-Nhập `username`, có thể bỏ trống `web port` để launcher tự chọn port còn trống. Nếu chat khác mạng, nhập `IP máy này` là IP VPN/public của máy đang tạo peer. Máy làm bootstrap/mailbox thì để trống `Bootstrap server`; launcher sẽ tự tạo bootstrap/mailbox và quảng bá mailbox bằng IP bạn nhập. Máy tham gia thì nhập `Bootstrap server`, ví dụ `100.64.1.10:9000`.
+Nhập `username`, có thể bỏ trống `web port` để launcher tự chọn port còn trống. Máy làm bootstrap/mailbox thì nhập `IP máy này` là IP VPN/public của máy host và để trống `Bootstrap server`; launcher sẽ tự tạo bootstrap/mailbox. Máy tham gia thì chỉ cần nhập `Bootstrap server`, ví dụ `100.64.1.10:9000`; ô `IP máy này` để trống để launcher tự detect.
 
 Launcher chỉ bind `127.0.0.1:9200` và chỉ chấp nhận username gồm chữ, số, `_`, `-`.
 
@@ -425,7 +426,7 @@ Mở `http://localhost:9200`, nhập:
 
 ```text
 Username: friend
-IP máy này: 100.64.1.20
+IP máy này: để trống
 Bootstrap server: 100.64.1.10:9000
 Mailbox server: để trống
 Web port: 33144
@@ -443,7 +444,7 @@ Sau đó mở `http://localhost:9200` và nhập:
 
 ```text
 Username: tên của bạn ấy
-IP máy này: IP Tailscale của máy bạn ấy
+IP máy này: để trống
 Bootstrap server: IP Tailscale máy chủ:9000
 Mailbox server: để trống
 Web port: để trống

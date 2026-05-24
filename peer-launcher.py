@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import html
+import ipaddress
 import json
 import os
 import re
@@ -65,10 +66,12 @@ def ensure_bootstrap():
     ensure_network()
     ensure_mailbox()
     run(["docker", "rm", "-f", "bootstrap"], check=False)
+    (ROOT / "data" / "bootstrap").mkdir(parents=True, exist_ok=True)
     run([
         "docker", "run", "-d", "--name", "bootstrap", "--network", NETWORK,
         "-p", f"{BOOTSTRAP_PORT}:{BOOTSTRAP_PORT}",
         "-p", f"{DASHBOARD_PORT}:{DASHBOARD_PORT}",
+        "-v", f"{ROOT / 'data' / 'bootstrap'}:/app/data",
         BOOTSTRAP_IMG,
         "--port", str(BOOTSTRAP_PORT),
         "--dashboard-port", str(DASHBOARD_PORT),
@@ -82,10 +85,12 @@ def ensure_bootstrap_for_mailbox(mailbox_addr):
     ensure_network()
     ensure_mailbox()
     run(["docker", "rm", "-f", "bootstrap"], check=False)
+    (ROOT / "data" / "bootstrap").mkdir(parents=True, exist_ok=True)
     run([
         "docker", "run", "-d", "--name", "bootstrap", "--network", NETWORK,
         "-p", f"{BOOTSTRAP_PORT}:{BOOTSTRAP_PORT}",
         "-p", f"{DASHBOARD_PORT}:{DASHBOARD_PORT}",
+        "-v", f"{ROOT / 'data' / 'bootstrap'}:/app/data",
         BOOTSTRAP_IMG,
         "--port", str(BOOTSTRAP_PORT),
         "--dashboard-port", str(DASHBOARD_PORT),
@@ -110,6 +115,99 @@ def choose_web_port():
     raise RuntimeError("No free port range found")
 
 
+def local_ipv4_addresses():
+    addresses = set()
+    for host in (socket.gethostname(), socket.getfqdn(), "localhost"):
+        try:
+            for family, _, _, _, sockaddr in socket.getaddrinfo(host, None, socket.AF_INET):
+                if family == socket.AF_INET:
+                    addresses.add(sockaddr[0])
+        except socket.gaierror:
+            pass
+
+    for cmd in (["ip", "-o", "-4", "addr", "show"], ["tailscale", "ip", "-4"]):
+        try:
+            result = run(cmd, check=False)
+        except FileNotFoundError:
+            continue
+        if result.returncode != 0:
+            continue
+        if cmd[0] == "ip":
+            for match in re.finditer(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", result.stdout):
+                addresses.add(match.group(1))
+        else:
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                try:
+                    ipaddress.ip_address(line)
+                    addresses.add(line)
+                except ValueError:
+                    pass
+    return addresses
+
+
+def endpoint_parts(value, label):
+    if value.count(":") != 1:
+        raise ValueError(f"{label} phải có dạng host:port")
+    host, port_raw = value.rsplit(":", 1)
+    host = host.strip()
+    if not host:
+        raise ValueError(f"{label} thiếu host")
+    try:
+        port = int(port_raw)
+    except ValueError:
+        raise ValueError(f"{label} port không hợp lệ")
+    if port < 1 or port > 65535:
+        raise ValueError(f"{label} port phải nằm trong khoảng 1..65535")
+    return host, port
+
+
+def can_connect(host, port, timeout=1.5):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def detect_host_for_endpoint(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=2) as sock:
+            detected = sock.getsockname()[0]
+    except OSError as exc:
+        raise ValueError(f"Không kết nối được bootstrap server {host}:{port}. Kiểm tra IP/port trước khi tạo peer.") from exc
+    if not detected or detected.startswith("127."):
+        raise ValueError(
+            "Không tự detect được IP máy này qua bootstrap. "
+            "Hãy nhập Tailscale IP của máy này vào phần override nâng cao."
+        )
+    return detected
+
+
+def validate_advertised_host(host):
+    try:
+        parsed = ipaddress.ip_address(host)
+        if parsed.is_loopback or parsed.is_unspecified:
+            raise ValueError("IP máy này không được là localhost/0.0.0.0. Nếu test local, hãy để trống ô IP máy này.")
+        resolved = {str(parsed)}
+    except ValueError as exc:
+        if "localhost/0.0.0.0" in str(exc):
+            raise
+        try:
+            resolved = {item[4][0] for item in socket.getaddrinfo(host, None, socket.AF_INET)}
+        except socket.gaierror:
+            raise ValueError("IP máy này không hợp lệ hoặc hostname không resolve được")
+
+    local_addresses = local_ipv4_addresses()
+    if not resolved.intersection(local_addresses):
+        known = ", ".join(sorted(local_addresses)) or "không phát hiện được IP local"
+        raise ValueError(
+            "IP máy này phải là IP thật của máy đang chạy launcher. "
+            f"Bạn nhập '{host}', nhưng IP local phát hiện được là: {known}. "
+            "Nếu chỉ test nhiều peer trên cùng máy, hãy để trống ô IP máy này."
+        )
+
+
 def container_web_port(container):
     result = run([
         "docker", "inspect", "-f",
@@ -125,11 +223,20 @@ def container_web_port(container):
     return ""
 
 
+def has_published_web_port(container, web_port):
+    if not web_port:
+        return False
+    result = run(["docker", "port", container, f"{web_port}/tcp"], check=False)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def peers():
     items = []
     for name in sorted(n for n in docker_names() if n.startswith("peer-")):
         username = name.removeprefix("peer-")
         web = container_web_port(name)
+        if not has_published_web_port(name, web):
+            continue
         running = name in running_names()
         items.append({
             "username": username,
@@ -165,21 +272,29 @@ def validate_peer_request(payload):
     if not USERNAME_RE.match(username):
         raise ValueError("Username chỉ dùng chữ, số, dấu _ hoặc -, tối đa 32 ký tự")
 
-    advertised_host = str(payload.get("advertisedHost", "")).strip()
-    advertised_host_provided = bool(advertised_host)
-    if not advertised_host:
-        advertised_host = f"peer-{username}"
-
     bootstrap_addr = str(payload.get("bootstrap", "")).strip()
     use_local_infra = not bootstrap_addr
-    if bootstrap_addr and ":" not in bootstrap_addr:
-        raise ValueError("Bootstrap endpoint phải có dạng host:port")
+    bootstrap_host = None
+    bootstrap_port = None
+    if bootstrap_addr:
+        bootstrap_host, bootstrap_port = endpoint_parts(bootstrap_addr, "Bootstrap endpoint")
     if not bootstrap_addr:
         bootstrap_addr = f"bootstrap:{BOOTSTRAP_PORT}"
 
+    advertised_host = str(payload.get("advertisedHost", "")).strip()
+    advertised_host_provided = bool(advertised_host)
+    if advertised_host_provided:
+        validate_advertised_host(advertised_host)
+    elif use_local_infra:
+        advertised_host = f"peer-{username}"
+    else:
+        advertised_host = detect_host_for_endpoint(bootstrap_host, bootstrap_port)
+
     mailbox_addr = str(payload.get("mailbox", "")).strip()
-    if mailbox_addr and ":" not in mailbox_addr:
-        raise ValueError("Mailbox endpoint phải có dạng host:port")
+    if mailbox_addr:
+        mailbox_host, mailbox_port = endpoint_parts(mailbox_addr, "Mailbox endpoint")
+        if not can_connect(mailbox_host, mailbox_port):
+            raise ValueError(f"Không kết nối được mailbox server {mailbox_addr}.")
     if not mailbox_addr:
         mailbox_addr = f"mailbox:{MAILBOX_PORT}" if use_local_infra else f"{bootstrap_addr.split(':', 1)[0]}:{MAILBOX_PORT}"
 
@@ -325,8 +440,8 @@ PAGE = """<!doctype html>
         <label>Username
           <input name="username" placeholder="charlie" autocomplete="off" required pattern="[A-Za-z0-9_-]{1,32}" />
         </label>
-        <label>IP máy này
-          <input name="advertisedHost" placeholder="Tailscale/Public IP, ví dụ 100.64.1.20" />
+        <label>IP máy này <span class="muted">(tùy chọn nâng cao)</span>
+          <input name="advertisedHost" placeholder="Để trống để tự detect qua bootstrap" />
         </label>
         <label>Bootstrap server
           <input name="bootstrap" placeholder="Máy bạn bè nhập 100.64.1.10:9000, máy chủ có thể bỏ trống" />
@@ -338,7 +453,7 @@ PAGE = """<!doctype html>
           <input name="webPort" type="number" min="1024" max="63000" placeholder="Auto nếu bỏ trống" />
         </label>
         <button id="createBtn" type="submit">Register and start peer</button>
-        <div class="hint">Nếu máy này làm bootstrap/mailbox, nhập IP máy này và để trống Bootstrap server. Nếu máy này chỉ tham gia, nhập IP máy này và Bootstrap server của máy chủ.</div>
+        <div class="hint">Bạn bè chỉ cần nhập Username và Bootstrap server. Ô IP máy này để trống; launcher sẽ tự detect IP dùng để kết nối tới bootstrap. Chỉ nhập IP thủ công khi auto-detect sai.</div>
       </form>
       <div id="message"></div>
     </div>

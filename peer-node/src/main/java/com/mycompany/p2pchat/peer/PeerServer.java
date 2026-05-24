@@ -151,11 +151,11 @@ public class PeerServer {
         msg = decryptDirectMessage(msg);
         System.out.printf("%n[%s] %s -> you: %s%n> ",
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
-        peerManager.getMessageRepository().saveMessage(msg);
+        boolean inserted = peerManager.getMessageRepository().saveMessage(msg);
         // Update recent peers cache
         var peer = peerManager.getPeer(msg.getSender());
         if (peer != null) peerManager.getRecentPeersCache().upsert(msg.getSender(), peer.getAddress());
-        broadcastWs("DIRECT_MESSAGE", messageToMap(msg));
+        if (inserted) broadcastWs("DIRECT_MESSAGE", messageToMap(msg));
     }
 
     private Message decryptDirectMessage(Message msg) {
@@ -182,8 +182,9 @@ public class PeerServer {
 
         // If in LEAVING state — store but don't ACK
         if (entry != null && "LEAVING".equals(entry.getGroupState())) {
-            peerManager.getMessageRepository().saveMessage(msg);
-            broadcastWs("GROUP_MESSAGE", messageToMap(msg));
+            if (peerManager.getMessageRepository().saveMessage(msg)) {
+                broadcastWs("GROUP_MESSAGE", messageToMap(msg));
+            }
             return; // no ACK
         }
 
@@ -201,7 +202,8 @@ public class PeerServer {
             buffer.sort(Comparator.comparingLong(Message::getLamportClock)
                         .thenComparing(m -> m.getSender() != null ? m.getSender() : ""));
             for (Message m : buffer) {
-                peerManager.getMessageRepository().saveMessage(m);
+                boolean inserted = peerManager.getMessageRepository().saveMessage(m);
+                if (!inserted) continue;
                 System.out.printf("%n[%s] [%s] %s: %s%n> ",
                         TimeUtil.formatTimestamp(m.getTimestamp()),
                         m.getGroupName() != null ? m.getGroupName() : groupId,
@@ -214,8 +216,9 @@ public class PeerServer {
     private void handleBroadcast(Message msg) {
         System.out.printf("%n[%s] [BROADCAST] %s: %s%n> ",
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
-        peerManager.getMessageRepository().saveMessage(msg);
-        broadcastWs("BROADCAST", messageToMap(msg));
+        if (peerManager.getMessageRepository().saveMessage(msg)) {
+            broadcastWs("BROADCAST", messageToMap(msg));
+        }
     }
 
     private void handleTyping(Message msg) {
@@ -225,8 +228,9 @@ public class PeerServer {
     private void handleOfflineMessage(Message msg) {
         System.out.printf("%n[%s] [OFFLINE] %s: %s%n> ",
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());
-        peerManager.getMessageRepository().saveMessage(msg);
-        broadcastWs("OFFLINE_MESSAGE", messageToMap(msg));
+        if (peerManager.getMessageRepository().saveMessage(msg)) {
+            broadcastWs("OFFLINE_MESSAGE", messageToMap(msg));
+        }
     }
 
     // ─────────────────────── Peer Events ───────────────────────

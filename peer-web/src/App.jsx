@@ -36,6 +36,28 @@ export default function App() {
   const activeChatRef = useRef(activeChat);
   const downloadedRefs = useRef(new Set());
 
+  const appendUniqueMessage = useCallback((message) => {
+    if (!message) return;
+    setMessages(prev => {
+      if (message.messageId && prev.some(m => m.messageId === message.messageId)) return prev;
+      const optimisticIndex = prev.findIndex(m =>
+        m.messageId?.startsWith('local-') &&
+        m.sender === message.sender &&
+        m.content === message.content &&
+        (m.type || message.type) === (message.type || m.type) &&
+        (m.receiver || '') === (message.receiver || '') &&
+        (m.groupId || '') === (message.groupId || '') &&
+        Math.abs((m.timestamp || 0) - (message.timestamp || Date.now())) < 10000
+      );
+      if (optimisticIndex >= 0) {
+        const next = [...prev];
+        next[optimisticIndex] = { ...prev[optimisticIndex], ...message };
+        return next;
+      }
+      return [...prev, message];
+    });
+  }, []);
+
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -109,7 +131,7 @@ export default function App() {
 
         case 'DIRECT_MESSAGE':
           if (cur?.type === 'peer' && (data.sender === cur.name || data.receiver === cur.name)) {
-            setMessages(prev => [...prev, data]);
+            appendUniqueMessage(data);
           } else {
             const senderName = data.sender.split(':')[0]; // get username
             setUnreadCounts(prev => ({ ...prev, [senderName]: (prev[senderName] || 0) + 1 }));
@@ -119,7 +141,7 @@ export default function App() {
 
         case 'GROUP_MESSAGE':
           if (cur?.type === 'group' && data.groupId === cur.id) {
-            setMessages(prev => [...prev, data]);
+            appendUniqueMessage(data);
           } else {
             setUnreadCounts(prev => ({ ...prev, [data.groupId]: (prev[data.groupId] || 0) + 1 }));
             showToast(`👥 Message in group`, 'info');
@@ -134,7 +156,7 @@ export default function App() {
 
         case 'BROADCAST':
           if (cur?.type === 'broadcast') {
-            setMessages(prev => [...prev, { ...data, type: 'BROADCAST' }]);
+            appendUniqueMessage({ ...data, type: 'BROADCAST' });
           } else {
             setUnreadCounts(prev => ({ ...prev, 'broadcast': (prev['broadcast'] || 0) + 1 }));
             showToast(`📢 ${data.sender}: ${data.content}`, 'info');
@@ -238,7 +260,7 @@ export default function App() {
     });
     wsRef.current = ws;
     return () => ws.close();
-  }, [refreshData, showToast]);
+  }, [appendUniqueMessage, refreshData, showToast]);
 
   // ── Handlers ──────────────────────────────────────────────
   const handleSelectChat = useCallback((chat) => {
@@ -267,7 +289,7 @@ export default function App() {
           : 'BROADCAST',
       deliveryState: activeChat.type === 'peer' ? 'PENDING_LOCAL' : undefined,
     };
-    setMessages(prev => [...prev, optimisticMessage]);
+    appendUniqueMessage(optimisticMessage);
 
     try {
       if (activeChat.type === 'peer') {
@@ -296,7 +318,7 @@ export default function App() {
       setError('Send failed: ' + e.message);
       setTimeout(() => setError(''), 3000);
     }
-  }, [activeChat, info.username, showToast]);
+  }, [activeChat, appendUniqueMessage, info.username, showToast]);
 
   const handleSendFile = useCallback(async (file) => {
     if (!activeChat) return;
