@@ -1,482 +1,496 @@
-# P2PChat - Hệ thống Chat Ngang hàng (Peer-to-Peer Chat System)
+# P2PChat - Hệ thống Chat Ngang hàng
 
-## 1. Giới thiệu
+P2PChat là hệ thống chat peer-to-peer viết bằng Java 17, có Web UI React, lưu dữ liệu cục bộ bằng SQLite và hỗ trợ nhắn tin trực tiếp, nhóm, broadcast, gửi file, store-and-forward qua mailbox server khi peer offline.
 
-P2PChat là một hệ thống chat ngang hàng (P2P) được xây dựng bằng Java, cho phép nhiều người dùng trao đổi tin nhắn trực tiếp qua mạng mà không phụ thuộc hoàn toàn vào server trung tâm. Mỗi peer vừa đóng vai trò client vừa là server. Hệ thống bao gồm giao diện Web (React) và CLI.
+Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstrap server chỉ giữ vai trò discovery/registry và điều phối endpoint mailbox; dữ liệu offline được tách sang `mailbox-server`.
 
-## 2. Kiến trúc hệ thống
+## Kiến trúc
 
+```text
+┌──────────────────────────────┐       ┌──────────────────────────────┐
+│ Bootstrap Server             │       │ Mailbox Server                │
+│ TCP registry: 9000           │<----->│ Store-and-forward TCP: 9100   │
+│ Dashboard HTTP: 9001         │       │ SQLite: data/mailbox.db       │
+└──────────────┬───────────────┘       └──────────────┬───────────────┘
+               │                                      │
+               │ register/discover/heartbeat          │ store/pull/ack offline
+               │                                      │
+    ┌──────────▼──────────┐             ┌─────────────▼─────────┐
+    │ Peer alice           │  P2P TCP    │ Peer bob               │
+    │ Web UI: 33143        │<----------->│ Web UI: 33144          │
+    │ Peer TCP: 34143      │ direct msg  │ Peer TCP: 34144        │
+    │ File TCP: 35143      │ file chunks │ File TCP: 35144        │
+    │ SQLite local DB      │             │ SQLite local DB        │
+    └──────────────────────┘             └───────────────────────┘
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Bootstrap Server                       │
-│            (Peer Discovery & Registry)                   │
-│                  Port: 8080                              │
-└────────┬──────────┬──────────┬──────────┬───────────────┘
-         │          │          │          │
-    ┌────▼───┐ ┌───▼────┐ ┌──▼───┐ ┌───▼────┐
-    │ Peer A │ │ Peer B │ │Peer C│ │ Peer D │
-    │ :random│ │ :random│ │:rand │ │ :random│
-    │ Web:UI │ │ Web:UI │ │Web:UI│ │ Web:UI │
-    └────┬───┘ └───┬────┘ └──┬───┘ └───┬────┘
-         │         │         │         │
-         └─────────┴────┬────┴─────────┘
-                        │
-              P2P TCP Direct Connection
-```
 
-### Các thành phần chính
+### Thành phần chính
 
 | Thành phần | Vai trò |
 |---|---|
-| **Bootstrap Server** | Đăng ký peer, cung cấp danh sách peer online, hỗ trợ peer discovery, lưu offline messages |
-| **Peer Node** | Vừa là client gửi tin nhắn, vừa là server nhận tin nhắn, kèm Web UI (Javalin + React) |
-| **Database (SQLite)** | Lưu trữ lịch sử tin nhắn cục bộ tại mỗi peer (WAL mode cho thread safety) |
-| **Web UI (React)** | Giao diện chat trên trình duyệt, kết nối qua REST API + WebSocket |
+| `bootstrap-server` | Đăng ký peer, heartbeat, peer discovery, dashboard theo dõi trạng thái, trả endpoint mailbox qua `RESOLVE_MAILBOX`. |
+| `mailbox-server` | Lưu tin offline bằng SQLite, hỗ trợ `STORE_MESSAGE`, `PULL_MESSAGES`, `DELIVERY_ACK`, TTL 7 ngày, ack từng member cho group message. |
+| `peer-node` | Peer TCP server/client, Web API Javalin, CLI, SQLite local, DHT-lite group coordinator, outbox retry, E2EE cho direct/offline payload, file transfer. |
+| `peer-web` | React Web UI cho chat, group management, broadcast, file transfer, trạng thái outbox và realtime WebSocket. |
 
-## 3. Cấu trúc dự án
+## Cấu trúc dự án
 
-```
+```text
 P2PChat/
-├── Dockerfile                 # Multi-stage build: React → Maven → JRE
-├── .dockerignore
-├── build.sh                   # Script build thủ công (không dùng Docker)
-├── run.sh                     # Script quản lý Docker (build/start/stop/peer/list)
-├── Readme.md
-├── WORKLOG.md
-│
-├── bootstrap-server/          # Bootstrap Server
+├── run.sh                         # Build/start/stop Docker stack, tạo peers-index.html
+├── build.sh                       # Build React + 3 Maven modules cho local run
+├── Dockerfile                     # Multi-stage image cho peer-node kèm React build
+├── peers-index.html               # Trang link nhanh tới các peer đang chạy
+├── bootstrap-server/
 │   ├── Dockerfile
 │   ├── pom.xml
 │   └── src/main/java/com/mycompany/p2pchat/
-│       ├── bootstrap/
-│       │   ├── BootstrapApp.java             # Entry point
-│       │   ├── BootstrapServer.java          # Server chính
-│       │   ├── ClientHandler.java            # Xử lý kết nối từ peer
-│       │   └── PeerRegistry.java             # Quản lý danh sách peer
+│       ├── bootstrap/             # BootstrapApp, BootstrapServer, dashboard, registry
 │       ├── model/
 │       ├── protocol/
 │       └── utils/
-│
-├── peer-node/                 # Peer Node
-│   ├── Dockerfile             # Simple Java-only build (không kèm React)
-│   ├── pom.xml                # Maven + Javalin + SQLite + Gson + SLF4J
-│   └── src/main/java/com/mycompany/p2pchat/
-│       ├── peer/
-│       │   ├── PeerApp.java                  # Entry point, parse CLI args
-│       │   ├── PeerNode.java                 # Lớp chính: khởi động, CLI, heartbeat
-│       │   ├── PeerServer.java               # TCP server nhận tin nhắn
-│       │   ├── PeerClient.java               # TCP client gửi tin nhắn, retry, ACK
-│       │   ├── PeerManager.java              # Quản lý peer list, groups, database
-│       │   └── WebServer.java                # Javalin HTTP/WS server cho Web UI
-│       ├── database/
-│       │   ├── DatabaseManager.java           # Quản lý SQLite (WAL mode)
-│       │   ├── DatabaseInitializer.java       # Khởi tạo schema
-│       │   └── MessageRepository.java         # CRUD tin nhắn, lịch sử chat
-│       ├── model/
-│       ├── protocol/
-│       └── utils/
-│
-└── peer-web/                  # React Web UI
+├── mailbox-server/
+│   ├── Dockerfile
+│   ├── pom.xml
+│   └── src/main/
+│       ├── java/com/mycompany/p2pchat/mailbox/
+│       └── resources/schema.sql
+├── peer-node/
+│   ├── Dockerfile
+│   ├── pom.xml
+│   └── src/main/
+│       ├── java/com/mycompany/p2pchat/
+│       │   ├── peer/              # PeerNode, PeerClient, PeerServer, mailbox, E2EE, coordinator
+│       │   ├── database/          # SQLite repositories: messages, outbox, file transfers
+│       │   ├── filetransfer/      # Offer/accept/chunk transfer/resume
+│       │   ├── model/
+│       │   ├── protocol/
+│       │   └── utils/
+│       └── resources/
+│           ├── schema.sql
+│           └── static/            # React build được copy vào đây
+└── peer-web/
     ├── package.json
     └── src/
-        ├── api.js                            # REST API + WebSocket client
-        ├── App.jsx                           # Main component
-        ├── App.css                           # Styles
+        ├── api.js
+        ├── App.jsx
+        ├── App.css
         └── components/
-            ├── Sidebar.jsx                   # Peer list, group list, add member
-            ├── ChatArea.jsx                  # Message display
-            └── MessageInput.jsx              # Message input
 ```
 
-## 4. Giao thức trao đổi thông điệp
+## Tính năng
 
-### 4.1. Định dạng message
+- Peer discovery qua bootstrap server.
+- Heartbeat mỗi 5 giây và phát hiện peer mất kết nối.
+- Direct message P2P qua TCP, ACK timeout 5 giây, retry tối đa 3 lần.
+- Store-and-forward qua mailbox server khi peer offline hoặc direct send thất bại.
+- Durable outbox tại peer, retry nền, backoff, circuit breaker khi mailbox lỗi.
+- E2EE payload cho direct/offline message bằng khóa identity của peer.
+- Pull mailbox định kỳ và delivery ack sau khi lưu local thành công.
+- Chat nhóm DHT-lite: coordinator HRW top-K, gossip, add/kick/leave/disband, repair/resync cache.
+- Group offline message qua mailbox với snapshot member và per-member delivery ack.
+- Broadcast message và lịch sử broadcast.
+- File transfer trực tiếp: offer/accept/reject/cancel, chunk 64 KB, SHA-256, resume/checkpoint, giới hạn 100 MB.
+- SQLite local cho message history, group cache, known peers, recent peers, outbox, file transfer.
+- Web UI React + Javalin REST API + WebSocket realtime.
+- Bootstrap dashboard tại port 9001 khi chạy bằng `run.sh`.
+- Docker scripts để khởi động nhiều peer nhanh và sinh trang `peers-index.html`.
 
-Mọi message được truyền qua TCP dưới dạng JSON (newline-delimited):
+## Công nghệ
+
+| Công nghệ | Phiên bản | Mục đích |
+|---|---:|---|
+| Java | 17+ | Backend TCP, HTTP, storage logic |
+| Maven Shade Plugin | 3.5.1 | Build fat jar |
+| Javalin | 6.1.3 | HTTP/WebSocket server cho peer Web UI |
+| React | 18.2 | Frontend |
+| react-scripts | 5.0.1 | Build React app |
+| SQLite JDBC | 3.45.1.0 | Local DB và mailbox DB |
+| Gson | 2.10.1 | JSON protocol |
+| SLF4J Simple | 2.0.9 | Logging |
+| Docker | 20+ | Containerized run |
+
+## Giao thức
+
+Message TCP dùng JSON newline-delimited.
 
 ```json
 {
   "type": "DIRECT_MESSAGE",
-  "sender": "peerA",
-  "receiver": "peerB",
+  "sender": "alice",
+  "receiver": "bob",
   "content": "Xin chào!",
   "timestamp": 1715376000000,
   "messageId": "uuid-string"
 }
 ```
 
-### 4.2. Các loại message (MessageType)
+### Nhóm message type chính
 
-| Type | Hướng | Mô tả |
-|---|---|---|
-| `REGISTER` | Peer → Bootstrap | Đăng ký peer mới vào mạng |
-| `REGISTER_ACK` | Bootstrap → Peer | Xác nhận đăng ký + peer list |
-| `PEER_LIST` | Bootstrap → Peer | Danh sách peer đang online |
-| `PEER_JOIN` | Bootstrap → All Peers | Thông báo peer mới tham gia |
-| `PEER_LEAVE` | Peer → Bootstrap | Thông báo peer rời mạng |
-| `DIRECT_MESSAGE` | Peer → Peer | Tin nhắn trực tiếp |
-| `GROUP_MESSAGE` | Peer → Peers | Tin nhắn nhóm |
-| `BROADCAST` | Peer → All Peers | Tin nhắn phát tới toàn mạng |
-| `ACK` | Peer → Peer | Xác nhận đã nhận tin nhắn |
-| `HEARTBEAT` | Peer → Bootstrap | Kiểm tra kết nối còn sống (5s) |
-| `HEARTBEAT_ACK` | Bootstrap → Peer | Xác nhận heartbeat + peer list |
-| `DISCOVER` | Peer → Bootstrap | Yêu cầu cập nhật danh sách peer |
-| `OFFLINE_MESSAGE` | Bootstrap → Peer | Chuyển tiếp tin nhắn lưu trữ |
-| `STORE_MESSAGE` | Peer → Bootstrap | Lưu tin nhắn cho peer offline |
+| Nhóm | Message type |
+|---|---|
+| Bootstrap/discovery | `REGISTER`, `REGISTER_ACK`, `REGISTER_NACK`, `PEER_LIST`, `PEER_JOIN`, `PEER_LEAVE`, `HEARTBEAT`, `HEARTBEAT_ACK`, `DISCOVER`, `RESOLVE_MAILBOX`, `RESOLVE_MAILBOX_ACK` |
+| Mailbox/offline | `STORE_MESSAGE`, `STORE_ACK`, `PULL_MESSAGES`, `PULL_RESPONSE`, `DELIVERY_ACK`, `MAILBOX_QUOTA_EXCEEDED`, `MAILBOX_MESSAGE_EXPIRED` |
+| Chat | `DIRECT_MESSAGE`, `GROUP_MESSAGE`, `BROADCAST`, `TYPING`, `ACK`, `SYSTEM` |
+| Group coordinator | `COORD_INIT`, `COORD_GOSSIP`, `GROUP_ADD`, `GROUP_LEAVE`, `GROUP_KICK`, `GROUP_DISBAND`, `GROUP_JOINED`, `GROUP_UPDATED`, `GROUP_KICKED`, `GROUP_DISBANDED` |
+| Repair/history | `GROUP_RESYNC_REQ`, `GROUP_RESYNC_RESP`, `CACHE_STALE`, `GROUP_GET`, `GROUP_HISTORY_DIGEST`, `GROUP_HISTORY_REQUEST`, `GROUP_HISTORY_RESPONSE` |
+| File transfer | `FILE_OFFER`, `FILE_ACCEPT`, `FILE_REJECT`, `FILE_DONE`, `FILE_ACK`, `FILE_GROUP_OFFER`, `FILE_HAVE`, `FILE_HAVE_REQ`, `FILE_HAVE_RESP`, `FILE_RESUME` |
+| Fallback/legacy | `PEER_LOOKUP_REQ`, `PEER_LOOKUP_RESP`, `CREATE_GROUP`, `ADD_TO_GROUP`, `ERROR` |
 
-### 4.3. Sequence Diagram - Peer tham gia mạng
-
-```
-Peer A                    Bootstrap Server                  Peer B, C, ...
-  │                              │                              │
-  │──── REGISTER ───────────────>│                              │
-  │                              │──── PEER_JOIN ──────────────>│
-  │<─── REGISTER_ACK ───────────│                              │
-  │<─── PEER_LIST ──────────────│                              │
-  │                              │                              │
-  │──── HEARTBEAT (5s) ────────>│                              │
-  │<─── HEARTBEAT_ACK + list ───│                              │
-```
-
-### 4.4. Sequence Diagram - Chat trực tiếp
-
-```
-Peer A                    Peer B
-  │                         │
-  │──── DIRECT_MESSAGE ────>│
-  │                         │ (save to SQLite)
-  │<─── ACK ────────────────│
-  │                         │
-```
-
-## 5. Cơ chế Peer Discovery
-
-1. **Bootstrap-based discovery**: Peer mới gửi `REGISTER` đến Bootstrap Server để nhận danh sách peer hiện tại.
-2. **Heartbeat**: Peer gửi `HEARTBEAT` định kỳ (5s) đến Bootstrap để duy trì trạng thái online.
-3. **Push notification**: Khi peer mới tham gia hoặc rời mạng, Bootstrap chủ động đẩy `PEER_JOIN`/`PEER_LEAVE` đến tất cả peer đang online.
-4. **On-demand discovery**: Peer có thể gửi `DISCOVER` bất kỳ lúc nào để cập nhật danh sách peer.
-
-## 6. Truyền tin đáng tin cậy (Reliability)
-
-- **ACK mechanism**: Mọi tin nhắn (DIRECT_MESSAGE, GROUP_MESSAGE) đều yêu cầu ACK từ người nhận. Timeout 5s, retry tối đa 3 lần.
-- **Offline message store**: Nếu peer đích offline, tin nhắn được lưu tại Bootstrap. Khi peer online lại, Bootstrap chuyển tiếp tin nhắn lưu trữ.
-- **Local persistence**: Mọi tin nhắn (gửi/nhận) đều được lưu vào SQLite ngay lập tức, kể cả khi gửi thất bại.
-
-## 7. Công nghệ sử dụng
-
-| Công nghệ | Phiên bản | Mục đích |
-|---|---|---|
-| Java | 17+ | Ngôn ngữ lập trình chính |
-| Java TCP Socket | - | Giao tiếp mạng giữa các peer |
-| Javalin | 6.1.3 | HTTP/WebSocket server cho Web UI |
-| React | 18 | Frontend Web UI |
-| SQLite | 3.45.1 | Lưu trữ cục bộ tại mỗi peer (WAL mode) |
-| Gson | 2.10.1 | Serialize/Deserialize JSON |
-| Maven | 3.9+ | Build & quản lý dependency |
-| Docker | - | Containerized deployment |
-
-## 8. Web UI API
+## Web API của peer
 
 | Method | Route | Mô tả |
 |---|---|---|
-| GET | `/api/info` | Thông tin peer hiện tại |
-| GET | `/api/peers` | Danh sách peer online |
-| GET | `/api/discover` | Refresh peer list từ bootstrap |
-| GET | `/api/history/{peerName}` | Lịch sử chat trực tiếp |
-| GET | `/api/group-history/{groupName}` | Lịch sử chat nhóm |
-| GET | `/api/groups` | Danh sách nhóm |
-| POST | `/api/msg` | Gửi tin nhắn trực tiếp |
-| POST | `/api/broadcast` | Phát tin nhắn toàn mạng |
-| POST | `/api/group/create` | Tạo nhóm |
-| POST | `/api/group/add` | Thêm peer vào nhóm |
-| POST | `/api/group/msg` | Gửi tin nhắn nhóm |
-| WS | `/ws` | WebSocket realtime events |
+| GET | `/health` | Health check peer. |
+| GET | `/api/info` | Thông tin peer, bootstrap, mailbox, trạng thái đăng ký. |
+| GET | `/api/auto-detect-host` | Tự phát hiện local host khi kết nối bootstrap. |
+| POST | `/api/init` | Khởi tạo peer từ Web UI với `username`, `peerPort`. |
+| GET | `/api/peers` | Danh sách peer đã biết, gồm peer offline có lịch sử chat. |
+| GET | `/api/discover` | Refresh peer list từ bootstrap. |
+| GET | `/api/history/{peerName}` | Lịch sử direct chat. |
+| GET | `/api/group-history/{groupId}` | Lịch sử group chat. |
+| GET | `/api/broadcast-history` | Lịch sử broadcast. |
+| GET | `/api/outbox` | 100 outbound message gần nhất và trạng thái retry/delivery. |
+| POST | `/api/msg` | Gửi direct message. |
+| POST | `/api/broadcast` | Gửi broadcast. |
+| POST | `/api/typing` | Gửi typing signal tới peer/group. |
+| GET | `/api/group/list` | Danh sách group DHT-lite trong cache local. |
+| GET | `/api/group/{groupId}` | Chi tiết group. |
+| POST | `/api/group/create` | Tạo group, chọn member và `groupMode`. |
+| POST | `/api/group/add` | Thêm member qua coordinator. |
+| POST | `/api/group/kick` | Kick member qua coordinator. |
+| POST | `/api/group/leave` | Rời group. |
+| POST | `/api/group/disband` | Giải tán group. |
+| POST | `/api/group/msg` | Gửi group message. |
+| GET | `/api/groups` | Legacy group API. |
+| POST | `/api/group/create-legacy` | Legacy create group API. |
+| GET | `/api/file/transfers` | Danh sách file transfer. |
+| POST | `/api/file/offer` | Upload file và offer tới peer hoặc group. |
+| POST | `/api/file/accept` | Chấp nhận file offer. |
+| POST | `/api/file/reject` | Từ chối file offer. |
+| POST | `/api/file/cancel` | Hủy outbound transfer. |
+| GET | `/api/file/download/{transferId}` | Tải file đã nhận xong. |
+| POST | `/api/shutdown` | Mô phỏng peer bị tắt đột ngột. |
+| WS | `/ws` | Realtime events: peer join/leave, messages, group updates, outbox, file progress. |
 
-## 9. Hướng dẫn cài đặt và chạy
+## Cài đặt
 
-### 9.1. Yêu cầu hệ thống
+### Yêu cầu
 
-#### Cách 1 — Dùng Docker (khuyến nghị)
-
-| Yêu cầu | Ghi chú |
+| Cách chạy | Yêu cầu |
 |---|---|
-| **Docker** | >= 20.x |
-| **Docker Compose** (tùy chọn) | Không bắt buộc, dự án dùng script `run.sh` |
+| Docker | Docker 20+ |
+| Local | Java JDK 17+, Maven 3.9+ hoặc Maven wrapper, Node.js 18+, npm 9+ |
 
-#### Cách 2 — Chạy thủ công (không dùng Docker)
-
-| Yêu cầu | Phiên bản | Cài đặt |
-|---|---|---|
-| **Java JDK** | 17+ | `sudo apt install openjdk-17-jdk` (Ubuntu/Debian) hoặc tải từ [Adoptium](https://adoptium.net/) |
-| **Maven** | 3.9+ | `sudo apt install maven` hoặc tải từ [maven.apache.org](https://maven.apache.org/download.cgi) |
-| **Node.js + npm** | 18+ / 9+ | `sudo apt install nodejs npm` hoặc dùng [nvm](https://github.com/nvm-sh/nvm) |
-
-Kiểm tra phiên bản:
+Kiểm tra nhanh:
 
 ```bash
-java -version      # >= 17
-mvn -version       # >= 3.9
-node -v            # >= 18
-npm -v             # >= 9
+java -version
+mvn -version
+node -v
+npm -v
+docker --version
 ```
 
----
+## Chạy bằng Docker
 
-### 9.2. Cách 1: Chạy bằng Docker (Khuyến nghị)
-
-#### Bước 1: Clone repository
-
-```bash
-git clone <repo-url> P2PChat
-cd P2PChat
-```
-
-#### Bước 2: Build Docker images
+### Build image
 
 ```bash
 chmod +x run.sh
 ./run.sh build
 ```
 
-Lệnh này sẽ build 2 images:
-- `p2pchat-bootstrap` — Bootstrap Server
-- `p2pchat-peer` — Peer Node (kèm React Web UI được build sẵn)
+Lệnh này build 3 image:
 
-Lần đầu build sẽ mất khoảng 3-5 phút để download dependencies.
+- `p2pchat-mailbox`
+- `p2pchat-bootstrap`
+- `p2pchat-peer`
 
-#### Bước 3: Khởi động hệ thống
+### Khởi động hệ thống
 
 ```bash
-# Khởi động bootstrap server + 2 peer mặc định (alice, bob)
 ./run.sh start
+```
 
-# Hoặc chỉ định tên peer
-./run.sh start alice bob
+`start` hiện khởi động mailbox, bootstrap và các peer mặc định:
 
-# Hoặc thêm peer mới bất kỳ lúc nào
+| Peer | Web UI | Peer TCP | File TCP |
+|---|---|---:|---:|
+| `alice` | `http://localhost:33143` | 34143 | 35143 |
+| `bob` | `http://localhost:33144` | 34144 | 35144 |
+| `duc` | `http://localhost:12345` | 13345 | 14345 |
+| `hoang` | `http://localhost:12346` | 13346 | 14346 |
+| `hoan` | `http://localhost:12349` | 13349 | 14349 |
+
+Hạ tầng mặc định khi dùng `run.sh`:
+
+| Service | URL/port |
+|---|---|
+| Bootstrap TCP | `localhost:9000` |
+| Bootstrap dashboard | `http://localhost:9001` |
+| Mailbox TCP | `localhost:9100` |
+| Peer index | `peers-index.html` ở root repo |
+
+### Thêm peer
+
+```bash
 ./run.sh peer charlie
-./run.sh peer dave
+./run.sh peer dave 33150
 ```
 
-#### Bước 4: Truy cập Web UI
+Nếu không truyền web port, script tự chọn port ngẫu nhiên, riêng `alice` và `bob` có port cố định. Peer port = web port + 1000, file port = peer port + 1000.
+
+### Lệnh quản lý
 
 ```bash
-# Xem danh sách peer đang chạy + URL Web UI
-./run.sh list
+./run.sh list               # Liệt kê peer đang chạy và URL
+./run.sh urls               # Cập nhật peers-index.html rồi in danh sách URL
+./run.sh logs alice         # Follow log peer alice
+./run.sh logs s             # Follow log bootstrap
+./run.sh logs all           # Follow log các peer
+./run.sh stop               # Dừng bootstrap, mailbox và tất cả peer
+./run.sh restart            # Stop rồi start lại stack mặc định
 ```
 
-Mở trình duyệt tại URL hiển thị, ví dụ:
-- Peer alice: `http://localhost:30001` (port ngẫu nhiên)
-- Peer bob: `http://localhost:30002` (port ngẫu nhiên)
+Dữ liệu Docker được mount vào:
 
-#### Bước 5: Chat!
+- `data/mailbox` cho mailbox.
+- `data/peers/<username>` cho từng peer.
 
-Trong Web UI của mỗi peer:
-1. Sidebar trái hiển thị danh sách peer online và nhóm
-2. Click vào tên peer để chat trực tiếp
-3. Dùng nút tạo nhóm và thêm member
-4. Nhập tin nhắn và gửi
+## Chạy local không dùng Docker
 
-#### Các lệnh quản lý khác
+Build toàn bộ:
 
 ```bash
-./run.sh list               # Xem danh sách peer + URL Web UI
-./run.sh logs alice         # Xem log peer alice
-./run.sh logs bob           # Xem log peer bob
-./run.sh logs s             # Xem log bootstrap server
-./run.sh stop               # Dừng tất cả container
-./run.sh restart            # Khởi động lại tất cả
+chmod +x build.sh
+./build.sh
 ```
 
----
-
-### 9.3. Cách 2: Chạy thủ công (Local, không dùng Docker)
-
-#### Bước 1: Clone repository
-
-```bash
-git clone <repo-url> P2PChat
-cd P2PChat
-```
-
-#### Bước 2: Build React Frontend
+Hoặc build thủ công:
 
 ```bash
 cd peer-web
 npm install
 npm run build
-```
 
-Kết quả: thư mục `peer-web/build/` chứa static files.
-
-#### Bước 3: Copy React build vào Peer Node resources
-
-```bash
-cd /path/to/P2PChat
+cd ..
 rm -rf peer-node/src/main/resources/static
 cp -r peer-web/build peer-node/src/main/resources/static
+
+cd bootstrap-server && ./mvnw clean package -DskipTests || mvn clean package -DskipTests
+cd ../mailbox-server && ./mvnw clean package -DskipTests || mvn clean package -DskipTests
+cd ../peer-node && ./mvnw clean package -DskipTests || mvn clean package -DskipTests
 ```
 
-#### Bước 4: Build Bootstrap Server
+Khởi động 4 terminal:
 
 ```bash
-cd /path/to/P2PChat/bootstrap-server
-mvn clean package -DskipTests
+# Terminal 1: mailbox
+java -jar mailbox-server/target/mailbox-server.jar \
+  --port 9100 \
+  --db data/mailbox.db
 ```
 
-Kết quả: `bootstrap-server/target/bootstrap-server.jar`
-
-#### Bước 5: Build Peer Node
-
 ```bash
-cd /path/to/P2PChat/peer-node
-mvn clean package -DskipTests
+# Terminal 2: bootstrap + dashboard
+java -jar bootstrap-server/target/bootstrap-server.jar \
+  --port 9000 \
+  --dashboard-port 9001 \
+  --mailbox localhost:9100
 ```
 
-Kết quả: `peer-node/target/peer-node.jar`
-
-> **Tip:** Có thể dùng script `build.sh` ở root để tự động hóa Bước 2–5:
-> ```bash
-> chmod +x build.sh
-> ./build.sh
-> ```
-
-#### Bước 6: Khởi động Bootstrap Server
-
 ```bash
-cd /path/to/P2PChat
-java -jar bootstrap-server/target/bootstrap-server.jar
-```
-
-Bootstrap server chạy mặc định trên port `8080`. Giữ terminal này mở.
-
-#### Bước 7: Khởi động Peer Node
-
-Mở terminal mới cho mỗi peer:
-
-```bash
-# Terminal 2 — Peer alice
+# Terminal 3: alice
 java -jar peer-node/target/peer-node.jar \
   --username alice \
-  --port 5001 \
   --host localhost \
-  --bootstrap localhost:8080 \
-  --web 3000
-
-# Terminal 3 — Peer bob
-java -jar peer-node/target/peer-node.jar \
-  --username bob \
-  --port 5002 \
-  --host localhost \
-  --bootstrap localhost:8080 \
-  --web 3001
-
-# Terminal 4 — Peer charlie
-java -jar peer-node/target/peer-node.jar \
-  --username charlie \
-  --port 5003 \
-  --host localhost \
-  --bootstrap localhost:8080 \
-  --web 3002
+  --port 34143 \
+  --bootstrap localhost:9000 \
+  --mailbox localhost:9100 \
+  --web 33143
 ```
 
-#### Bước 8: Truy cập Web UI
+```bash
+# Terminal 4: bob
+java -jar peer-node/target/peer-node.jar \
+  --username bob \
+  --host localhost \
+  --port 34144 \
+  --bootstrap localhost:9000 \
+  --mailbox localhost:9100 \
+  --web 33144
+```
 
-Mở trình duyệt:
-- Peer alice: `http://localhost:3000`
-- Peer bob: `http://localhost:3001`
-- Peer charlie: `http://localhost:3002`
+Mở Web UI:
 
----
+- `http://localhost:33143` cho alice.
+- `http://localhost:33144` cho bob.
+- `http://localhost:9001` cho bootstrap dashboard.
 
-### 9.4. CLI Chat (trong terminal peer)
+## CLI peer
 
-Nếu chạy thủ công (không Docker), CLI chat có sẵn ngay trong terminal chạy peer. Gõ các lệnh sau:
+Khi chạy local, terminal peer có CLI:
 
 | Lệnh | Mô tả |
 |---|---|
-| `/peers` | Hiển thị danh sách peer online |
-| `/msg <tên> <nội dung>` | Gửi tin nhắn trực tiếp |
-| `/group create <tên nhóm>` | Tạo nhóm chat |
-| `/group add <tên nhóm> <tên peer>` | Thêm peer vào nhóm |
-| `/group msg <tên nhóm> <nội dung>` | Gửi tin nhắn nhóm |
-| `/broadcast <nội dung>` | Phát tin nhắn toàn mạng |
-| `/history <tên>` | Xem lịch sử chat |
-| `/discover` | Refresh peer list |
-| `/exit` | Thoát |
+| `/help` | Hiển thị lệnh. |
+| `/peers` | Danh sách peer online. |
+| `/discover` | Refresh peer list. |
+| `/msg <peer> <message>` | Gửi direct message. |
+| `/broadcast <message>` | Gửi broadcast. |
+| `/group list` | Liệt kê group trong cache local. |
+| `/group msg <groupId> <message>` | Gửi group message. |
+| `/history <peer>` | Xem lịch sử direct chat. |
+| `/exit` | Thoát peer. |
 
-Nếu chạy bằng Docker, dùng `docker attach` để vào CLI:
+Tạo group DHT-lite nên thực hiện qua Web UI vì UI truyền đủ member list và group metadata.
+
+Nếu chạy bằng Docker:
 
 ```bash
 docker attach peer-alice
-# Gõ lệnh CLI như trên
-# Thoát attach: Ctrl+P, Ctrl+Q (không dùng Ctrl+C sẽ dừng container)
+# Thoát attach mà không dừng container: Ctrl+P, Ctrl+Q
 ```
 
-### 9.5. CLI Flags
+## CLI flags
+
+### Bootstrap server
 
 | Flag | Mặc định | Mô tả |
-|---|---|---|
-| `--username` | `peer` | Tên hiển thị |
-| `--port` | `5001` | Port TCP P2P |
-| `--host` | `localhost` | Hostname/IP quảng bá |
-| `--bootstrap` | `localhost:8080` | Địa chỉ bootstrap server |
-| `--web` | `3000` | Port Web UI (HTTP + WebSocket) |
+|---|---:|---|
+| `--port` | `8080` | TCP port bootstrap nếu chạy trực tiếp không truyền flag. `run.sh` dùng `9000`. |
+| `--dashboard-port` | `8081` | HTTP dashboard nếu chạy trực tiếp không truyền flag. `run.sh` dùng `9001`. |
+| `--mailbox` | `localhost:9100` | Endpoint mailbox mà bootstrap trả cho peer. |
 
----
+### Mailbox server
 
-### 9.6. Chạy thủ công bằng Docker (không dùng run.sh)
+| Flag | Mặc định | Mô tả |
+|---|---:|---|
+| `--port` | `9100` | TCP port mailbox. |
+| `--db` | `data/mailbox.db` | Đường dẫn SQLite DB. |
 
-```bash
-# Build images
-docker build -t p2pchat-bootstrap -f bootstrap-server/Dockerfile bootstrap-server/
-docker build -f Dockerfile -t p2pchat-peer .
+### Peer node
 
-# Tạo network
-docker network create p2p-net
+| Flag | Mặc định | Mô tả |
+|---|---:|---|
+| `--username` | rỗng | Tên peer. Nếu bỏ trống có thể init từ Web UI. |
+| `--host` | `localhost` | Host/IP peer quảng bá cho peer khác. |
+| `--port` | `5001` | TCP port nhận P2P message. |
+| `--bootstrap` | `localhost:8080` | Bootstrap endpoint. |
+| `--mailbox` | `localhost:9100` | Mailbox endpoint. Có thể được resolve lại từ bootstrap. |
+| `--web` | `3000` | HTTP/WebSocket port Web UI. |
 
-# Start bootstrap
-docker run -d --name bootstrap --network p2p-net -p 8080:8080 p2pchat-bootstrap
+## Luồng hoạt động chính
 
-# Start peer
-docker run -d --name peer-alice --network p2p-net \
-  -p 5001:5001 -p 3000:3000 p2pchat-peer \
-  --username alice --host peer-alice --port 5001 --bootstrap bootstrap:8080 --web 3000
+### Peer online
 
-docker run -d --name peer-bob --network p2p-net \
-  -p 5002:5002 -p 3001:3001 p2pchat-peer \
-  --username bob --host peer-bob --port 5002 --bootstrap bootstrap:8080 --web 3001
+```text
+Peer -> Bootstrap: REGISTER(username, host, port, keyId, publicKey)
+Bootstrap -> Peer: REGISTER_ACK(peer list)
+Bootstrap -> Others: PEER_JOIN
+Peer -> Bootstrap: HEARTBEAT mỗi 5 giây
+Bootstrap -> Peer: HEARTBEAT_ACK(peer list)
 ```
 
-## 10. Xử lý lỗi thường gặp
+### Direct message
 
-| Lỗi | Nguyên nhân | Cách fix |
+```text
+Sender lưu message + outbox PENDING
+Sender mã hóa payload cho receiver
+Sender -> Receiver: DIRECT_MESSAGE
+Receiver giải mã, lưu SQLite, trả ACK
+Sender đánh dấu DELIVERED_DIRECT
+```
+
+Nếu receiver offline hoặc direct send lỗi:
+
+```text
+Sender -> Mailbox: STORE_MESSAGE(encrypted envelope)
+Mailbox -> Sender: STORE_ACK
+Sender đánh dấu STORED_MAILBOX
+Receiver online/poll -> Mailbox: PULL_MESSAGES
+Receiver giải mã, lưu SQLite, gửi DELIVERY_ACK
+Mailbox đánh dấu DELIVERED
+```
+
+### File transfer
+
+```text
+Sender upload/chọn file trong Web UI
+Sender -> Receiver: FILE_OFFER(metadata, sha256, filePort)
+Receiver accept
+Receiver -> Sender: FILE_ACCEPT
+Receiver tải chunk qua file TCP port = peerPort + 1000
+Receiver verify SHA-256, cập nhật progress qua WebSocket
+```
+
+## Dữ liệu lưu trữ
+
+Peer SQLite (`data/peers/<username>` khi chạy Docker) gồm:
+
+- `messages`: lịch sử direct/group/broadcast/system/file offer.
+- `known_peers`: peer đã biết và trạng thái online.
+- `group_cache`: metadata group DHT-lite.
+- `recent_peers`: bootstrap cache fallback.
+- `outbound_messages`: durable outbox cho retry và mailbox.
+- `file_transfers`, `file_chunks`: metadata transfer và checkpoint chunk.
+
+Mailbox SQLite gồm:
+
+- `offline_messages`: encrypted envelope, TTL, trạng thái `STORED`/`DELIVERED`/`EXPIRED`.
+- `group_delivery_acks`: ack theo từng member cho group message.
+
+## Docker thủ công
+
+```bash
+docker build -t p2pchat-mailbox -f mailbox-server/Dockerfile mailbox-server/
+docker build -t p2pchat-bootstrap -f bootstrap-server/Dockerfile bootstrap-server/
+docker build -t p2pchat-peer -f Dockerfile .
+
+docker network create p2p-net
+
+docker run -d --name mailbox --network p2p-net \
+  -p 9100:9100 \
+  -v "$(pwd)/data/mailbox:/app/data" \
+  p2pchat-mailbox --port 9100
+
+docker run -d --name bootstrap --network p2p-net \
+  -p 9000:9000 -p 9001:9001 \
+  p2pchat-bootstrap \
+  --port 9000 --dashboard-port 9001 --mailbox mailbox:9100
+
+docker run -d --name peer-alice --network p2p-net \
+  -p 34143:34143 -p 35143:35143 -p 33143:33143 \
+  -v "$(pwd)/data/peers/alice:/app/data" \
+  p2pchat-peer \
+  --username alice --host peer-alice --port 34143 \
+  --bootstrap bootstrap:9000 --mailbox mailbox:9100 --web 33143
+```
+
+## Lỗi thường gặp
+
+| Lỗi | Nguyên nhân | Cách xử lý |
 |---|---|---|
-| `java: command not found` | Chưa cài Java 17+ | Cài JDK 17 và thêm vào PATH |
-| `mvn: command not found` | Chưa cài Maven | Cài Maven 3.9+ |
-| `npm: command not found` | Chưa cài Node.js | Cài Node.js 18+ |
-| `Port 8080 already in use` | Bootstrap server port bị chiếm | Dừng process chiếm port hoặc đổi port |
-| `Port 5001 already in use` | Peer port bị chiếm | Dùng port khác qua `--port` |
-| `Connection refused` | Peer không kết nối được Bootstrap | Kiểm tra Bootstrap đang chạy và `--bootstrap` đúng địa chỉ |
-| `Web UI không load` | Chưa build React hoặc chưa copy static files | Chạy lại `build.sh` hoặc build thủ công Bước 2–3 |
-| Docker build chậm | Lần đầu download dependencies | Bình thường, chờ 3-5 phút |
+| `java: command not found` | Chưa cài JDK | Cài Java 17+ và thêm vào PATH. |
+| `mvn: command not found` | Chưa cài Maven | Dùng Maven wrapper nếu có hoặc cài Maven. |
+| `npm: command not found` | Chưa cài Node/npm | Cài Node.js 18+ và npm. |
+| Port bị chiếm | Port bootstrap/peer/web/file đang dùng | Đổi port hoặc dừng process/container cũ. |
+| Web UI không load | Chưa build React vào `peer-node/src/main/resources/static` | Chạy `./build.sh`. |
+| Peer không đăng ký được | Sai bootstrap endpoint hoặc bootstrap chưa chạy | Kiểm tra `--bootstrap`, firewall, container network. |
+| Tin offline không tới | Mailbox chưa chạy hoặc sai endpoint | Kiểm tra `--mailbox`, dashboard, log mailbox. |
+| File transfer lỗi | Chưa expose file port hoặc peer không reachable | Mở port `peerPort + 1000` và kiểm tra host quảng bá. |
+| Docker build chậm | Lần đầu tải dependency Maven/npm | Bình thường, chờ build hoàn tất. |
 
-## 11. Chức năng đã triển khai
+## Tài liệu liên quan
 
-- [x] Bootstrap-based peer discovery
-- [x] Heartbeat + dead peer detection
-- [x] Chat trực tiếp (DIRECT_MESSAGE)
-- [x] Chat nhóm (GROUP_MESSAGE)
-- [x] Broadcast message trong toàn mạng
-- [x] Store-and-forward messaging khi peer offline
-- [x] ACK + retry (3 lần, timeout 5s)
-- [x] SQLite lưu lịch sử tin nhắn (WAL mode)
-- [x] Giao diện Web UI (React + Javalin)
-- [x] REST API + WebSocket realtime
-- [x] Thêm member vào group qua Web UI
-- [x] Docker containerized deployment
-- [x] Script `run.sh` quản lý peer với port ngẫu nhiên
+- `Bootstrap-server.md`
+- `Store-and-forward-mailbox-design.md`
+- `Workflow_P2PChat.md`
+- `Suggestion_P2Pmessaging.md`
+- `P2PChat_issues_to_fix.md`
+- `WORKLOG.md`
 
-## 12. Tác giả
+## Tác giả
 
 Đồ án môn Hệ thống Phân tán.

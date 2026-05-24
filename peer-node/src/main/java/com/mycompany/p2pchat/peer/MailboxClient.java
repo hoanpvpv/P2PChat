@@ -19,6 +19,18 @@ import java.util.List;
 public class MailboxClient {
     private static final Gson GSON = new Gson();
     private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
+    private static final long GROUP_TTL_FLOOR_MS = 12L * 60 * 60 * 1000;
+
+    /**
+     * Tinh TTL cho group msg: cang dong member, TTL cang ngan vi xac suat
+     * it nhat 1 nguoi online de gossip cho nguoi khac cang cao.
+     * ttl = max(12h, 7d / log2(max(2, N))).
+     */
+    static long groupTtlMillis(int totalMembers) {
+        int n = Math.max(2, totalMembers);
+        double scaled = DEFAULT_TTL_MS / (Math.log(n) / Math.log(2));
+        return Math.max(GROUP_TTL_FLOOR_MS, (long) scaled);
+    }
 
     private final PeerManager peerManager;
     private final E2EECrypto e2eeCrypto;
@@ -42,23 +54,24 @@ public class MailboxClient {
     }
 
     public boolean storeGroup(Message message, String payloadJson, String payloadHash,
-                              String groupId, java.util.List<String> members) throws IOException {
+                              String groupId, java.util.List<String> missedMembers, int totalGroupSize) throws IOException {
         MailboxEnvelope envelope = new MailboxEnvelope();
         envelope.messageId = message.getMessageId();
         envelope.conversationId = "group:" + groupId;
         envelope.sender = message.getSender();
         envelope.receiver = "";
         envelope.type = message.getType();
-        // Group hiện chưa có shared group key → lưu plaintext payload. Tương lai có thể bổc với sender-key.
+        // Group hiện chưa có shared group key → lưu plaintext payload. Tương lai có thể bọc với sender-key.
         envelope.payloadCiphertext = payloadJson;
         envelope.payloadHash = payloadHash;
         envelope.clientCreatedAt = message.getTimestamp() > 0 ? message.getTimestamp() : System.currentTimeMillis();
-        envelope.expiresAt = System.currentTimeMillis() + DEFAULT_TTL_MS;
+        // TTL group ngắn hơn direct vì xác suất ít nhất 1 member online → gossip cho rest cao hơn.
+        envelope.expiresAt = System.currentTimeMillis() + groupTtlMillis(totalGroupSize);
         envelope.senderPublicKey = peerManager.getLocalPublicKey();
         envelope.senderKeyId = peerManager.getLocalKeyId();
         envelope.algorithm = "PLAINTEXT-DEMO";
         envelope.groupId = groupId;
-        envelope.groupMembers = String.join(",", members);
+        envelope.groupMembers = String.join(",", missedMembers);
 
         Message wire = Message.builder()
                 .type(MessageType.STORE_MESSAGE.name())

@@ -254,11 +254,12 @@ public class PeerClient {
             try {
                 String payloadJson = mailboxClient.payloadJson(message);
                 String payloadHash = mailboxClient.payloadHash(payloadJson);
+                int totalGroupSize = cache.getMembers().size();
                 boolean stored = mailboxClient.storeGroup(message, payloadJson, payloadHash,
-                        groupId, missedMemberUsernames);
+                        groupId, missedMemberUsernames, totalGroupSize);
                 if (stored) {
                     logger.info("Group msg " + message.getMessageId() + " stored to mailbox for "
-                            + missedMemberUsernames);
+                            + missedMemberUsernames + " (group size=" + totalGroupSize + ")");
                 }
             } catch (Exception e) {
                 logger.warning("Failed to store group msg to mailbox: " + e.getMessage());
