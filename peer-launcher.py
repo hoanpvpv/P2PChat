@@ -159,6 +159,14 @@ def local_ipv4_addresses():
 TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
 
 
+def is_docker_bridge_ip(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.version == 4 and ipaddress.ip_network("172.16.0.0/12").supernet_of(ipaddress.ip_network(f"{addr}/32"))
+
+
 def pick_best_local_ip():
     """Prefer Tailscale CGNAT, then any private/usable IP, skip loopback/link-local/docker bridge."""
     tailscale = None
@@ -175,11 +183,7 @@ def pick_best_local_ip():
                 tailscale = addr
             continue
         # Skip docker bridge subnets to avoid advertising container-side addresses.
-        if addr.startswith("172.17.") or addr.startswith("172.18.") or addr.startswith("172.19.") \
-                or addr.startswith("172.20.") or addr.startswith("172.21.") or addr.startswith("172.22.") \
-                or addr.startswith("172.23.") or addr.startswith("172.24.") or addr.startswith("172.25.") \
-                or addr.startswith("172.26.") or addr.startswith("172.27.") or addr.startswith("172.28.") \
-                or addr.startswith("172.29.") or addr.startswith("172.30.") or addr.startswith("172.31."):
+        if is_docker_bridge_ip(addr):
             continue
         if fallback is None:
             fallback = addr
@@ -257,6 +261,14 @@ def detect_host_for_endpoint(host, port):
             "Không tự detect được IP máy này qua bootstrap. "
             "Hãy nhập Tailscale IP của máy này vào phần override nâng cao."
         )
+    if is_docker_bridge_ip(detected):
+        replacement = pick_best_local_ip()
+        if replacement:
+            return replacement
+        raise ValueError(
+            f"Tự detect ra IP Docker nội bộ {detected}, peer remote sẽ không kết nối được. "
+            "Hãy nhập Tailscale IP của máy này vào phần IP máy này."
+        )
     return detected
 
 
@@ -265,6 +277,8 @@ def validate_advertised_host(host):
         parsed = ipaddress.ip_address(host)
         if parsed.is_loopback or parsed.is_unspecified:
             raise ValueError("IP máy này không được là localhost/0.0.0.0. Nếu test local, hãy để trống ô IP máy này.")
+        if is_docker_bridge_ip(host):
+            raise ValueError("IP máy này không được là IP Docker 172.16.0.0/12. Hãy dùng Tailscale IP 100.x hoặc để trống để tự detect.")
         resolved = {str(parsed)}
     except ValueError as exc:
         if "localhost/0.0.0.0" in str(exc):

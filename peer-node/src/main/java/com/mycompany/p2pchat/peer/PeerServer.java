@@ -93,7 +93,7 @@ public class PeerServer {
         try {
             switch (MessageType.valueOf(type)) {
                 // ── P2P messaging ──
-                case DIRECT_MESSAGE  -> { handleDirectMessage(msg); sendAck(msg, socket); }
+                case DIRECT_MESSAGE  -> { handleDirectMessage(msg, socket); sendAck(msg, socket); }
                 case GROUP_MESSAGE   -> handleGroupMessage(msg, socket);
                 case BROADCAST       -> { handleBroadcast(msg); sendAck(msg, socket); }
                 case TYPING          -> handleTyping(msg);
@@ -147,7 +147,10 @@ public class PeerServer {
 
     // ─────────────────────── P2P Messaging ───────────────────────
 
-    private void handleDirectMessage(Message msg) {
+    private void handleDirectMessage(Message msg, Socket socket) {
+        if (socket != null) {
+            peerManager.learnReachablePeerHost(msg.getSender(), socket.getInetAddress().getHostAddress());
+        }
         msg = decryptDirectMessage(msg);
         System.out.printf("%n[%s] %s -> you: %s%n> ",
                 TimeUtil.formatTimestamp(msg.getTimestamp()), msg.getSender(), msg.getContent());

@@ -71,7 +71,9 @@ public class PeerManager {
         if (peer.getUsername().equals(localUsername)) return;
         PeerInfo existing = knownPeers.get(peer.getUsername());
         if (existing != null) {
-            existing.setHost(peer.getHost());
+            if (!(isDockerBridgeIp(peer.getHost()) && isTailscaleIp(existing.getHost()))) {
+                existing.setHost(peer.getHost());
+            }
             existing.setPort(peer.getPort());
             existing.setOnline(peer.isOnline());
             existing.setLastHeartbeat(System.currentTimeMillis());
@@ -82,6 +84,19 @@ public class PeerManager {
             peer.setLastHeartbeat(System.currentTimeMillis());
             knownPeers.put(peer.getUsername(), peer);
             persistKnownPeer(peer);
+        }
+    }
+
+    public void learnReachablePeerHost(String username, String observedHost) {
+        if (username == null || username.isBlank() || username.equals(localUsername)) return;
+        if (!isTailscaleIp(observedHost)) return;
+        PeerInfo existing = knownPeers.get(username);
+        if (existing == null || observedHost.equals(existing.getHost())) return;
+        if (isDockerBridgeIp(existing.getHost()) || existing.getHost() == null || existing.getHost().isBlank()) {
+            existing.setHost(observedHost);
+            existing.setOnline(true);
+            existing.setLastHeartbeat(System.currentTimeMillis());
+            persistKnownPeer(existing);
         }
     }
 
@@ -241,6 +256,33 @@ public class PeerManager {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private boolean isTailscaleIp(String value) {
+        byte[] bytes = parseIpv4(value);
+        if (bytes == null) return false;
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 100 && second >= 64 && second <= 127;
+    }
+
+    private boolean isDockerBridgeIp(String value) {
+        byte[] bytes = parseIpv4(value);
+        if (bytes == null) return false;
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 172 && second >= 16 && second <= 31;
+    }
+
+    private byte[] parseIpv4(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            java.net.InetAddress address = java.net.InetAddress.getByName(value);
+            byte[] bytes = address.getAddress();
+            return bytes.length == 4 ? bytes : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ==================== Getters/Setters ====================
