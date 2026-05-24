@@ -74,10 +74,14 @@ public class PeerClient {
 
         String status;
         var peer = peerManager.getPeer(receiver);
-        if (peer == null || !peer.isOnline()) {
-            logger.warning("Peer not online, storing in mailbox: " + receiver);
+        if (peer == null || !hasEndpoint(peer)) {
+            logger.warning("Peer endpoint unknown, storing in mailbox: " + receiver);
             status = storeMailbox(message, payloadJson, payloadHash) ? "STORED_MAILBOX" : "QUEUED_LOCAL";
         } else {
+            if (!peer.isOnline()) {
+                logger.info("Peer marked offline by bootstrap, trying direct anyway: "
+                        + receiver + "@" + peer.getAddress());
+            }
             peerManager.getRecentPeersCache().upsert(receiver, peer.getAddress());
             Message wireMessage = encryptDirectMessage(message, peer);
             peerManager.getOutboxRepository().markDirectInFlight(message.getMessageId());
@@ -145,8 +149,12 @@ public class PeerClient {
             }
 
             PeerInfo receiver = peerManager.getPeer(entry.receiver);
-            boolean triedDirect = receiver != null && receiver.isOnline();
+            boolean triedDirect = receiver != null && hasEndpoint(receiver);
             if (triedDirect) {
+                if (!receiver.isOnline()) {
+                    logger.info("Retrying direct to peer marked offline: "
+                            + entry.receiver + "@" + receiver.getAddress());
+                }
                 peerManager.getRecentPeersCache().upsert(entry.receiver, receiver.getAddress());
                 Message wireMessage = encryptDirectMessage(message, receiver);
                 peerManager.getOutboxRepository().markDirectInFlight(entry.messageId);
@@ -164,6 +172,13 @@ public class PeerClient {
                 boolean stored = storeMailbox(message, entry.payloadJson, entry.payloadHash);
                 notifyOutboxState(entry.messageId, stored ? "STORED_MAILBOX" : "FAILED_RETRYABLE", entry.receiver);
             }
+    }
+
+    private boolean hasEndpoint(PeerInfo peer) {
+        return peer != null
+                && peer.getHost() != null
+                && !peer.getHost().isBlank()
+                && peer.getPort() > 0;
     }
 
     public List<Message> pullMailboxMessages() {

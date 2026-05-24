@@ -10,7 +10,7 @@ public class Constants {
 
     // Heartbeat
     public static final int HEARTBEAT_INTERVAL = 5000;
-    public static final int HEARTBEAT_TIMEOUT = 15000;
+    public static final int HEARTBEAT_TIMEOUT = 45000;
 
     // Messaging
     public static final int ACK_TIMEOUT = 6000;

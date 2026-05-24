@@ -375,12 +375,17 @@ def validate_peer_request(payload):
         raise ValueError("Username chỉ dùng chữ, số, dấu _ hoặc -, tối đa 32 ký tự")
 
     bootstrap_addr = str(payload.get("bootstrap", "")).strip()
-    use_local_infra = not bootstrap_addr
+    use_local_infra = str(payload.get("localInfra", "")).lower() in ("1", "true", "on", "yes")
     bootstrap_host = None
     bootstrap_port = None
     if bootstrap_addr:
         bootstrap_host, bootstrap_port = endpoint_parts(bootstrap_addr, "Bootstrap endpoint")
-    if not bootstrap_addr:
+    if not bootstrap_addr and not use_local_infra:
+        raise ValueError(
+            "Bạn phải nhập Bootstrap server để tham gia cùng mạng chat. "
+            "Ví dụ: 100.120.26.95:9000. Chỉ tick 'máy này làm bootstrap' trên máy chủ."
+        )
+    if use_local_infra:
         bootstrap_addr = f"bootstrap:{BOOTSTRAP_PORT}"
 
     advertised_host = str(payload.get("advertisedHost", "")).strip()
@@ -524,6 +529,9 @@ PAGE = """<!doctype html>
     .toast.error { border-color: #f04438; color: #fda29b; }
     .open-link { display: block; margin-top: 10px; color: #7dd3fc; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
     .open-link:hover { text-decoration: underline; }
+    .check-row { display: flex; gap: 10px; align-items: flex-start; margin: 2px 0 14px; color: #cbd5e1; font-size: 13px; line-height: 1.4; }
+    .check-row input { width: auto; margin-top: 2px; }
+    .check-row strong { display: block; color: #f8fafc; }
     .continue { display: none; margin-bottom: 18px; padding: 14px; border: 1px solid #344054; border-radius: 8px; background: #101828; }
     .continue h2 { margin: 0 0 10px; font-size: 16px; }
     .peer-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid #263241; }
@@ -553,7 +561,11 @@ PAGE = """<!doctype html>
           <input name="advertisedHost" placeholder="Để trống để tự detect qua bootstrap" />
         </label>
         <label>Bootstrap server
-          <input name="bootstrap" placeholder="Máy bạn bè nhập 100.64.1.10:9000, máy chủ có thể bỏ trống" />
+          <input name="bootstrap" placeholder="Nhập bootstrap chung, ví dụ 100.120.26.95:9000" />
+        </label>
+        <label class="check-row">
+          <input name="localInfra" type="checkbox" />
+          <span><strong>Máy này làm bootstrap/mailbox server</strong>Chỉ bật trên máy chủ của nhóm. Bạn bè không bật mục này.</span>
         </label>
         <label>Mailbox server
           <input name="mailbox" placeholder="Thường bỏ trống, tự dùng IP bootstrap với port 9100" />
@@ -562,7 +574,7 @@ PAGE = """<!doctype html>
           <input name="webPort" type="number" min="1024" max="63000" placeholder="Auto nếu bỏ trống" />
         </label>
         <button id="createBtn" type="submit">Register and start peer</button>
-        <div class="hint">Bạn bè chỉ cần nhập Username và Bootstrap server. Ô IP máy này để trống; launcher sẽ tự detect IP dùng để kết nối tới bootstrap. Chỉ nhập IP thủ công khi auto-detect sai.</div>
+        <div class="hint">Bạn bè chỉ cần nhập Username và Bootstrap server chung. Ô IP máy này để trống; launcher sẽ tự detect IP dùng để kết nối tới bootstrap. Không để trống Bootstrap server trừ khi máy này chính là máy chủ và đã tick lựa chọn ở trên.</div>
       </form>
       <div id="message"></div>
     </div>
