@@ -29,6 +29,20 @@ ensure_mailbox() {
     fi
 }
 
+ensure_mailbox_public() {
+    if ! docker ps --format '{{.Names}}' | grep -q '^mailbox$'; then
+        docker rm -f mailbox 2>/dev/null || true
+        ensure_network
+        mkdir -p "$(pwd)/data/mailbox"
+        docker run -d --name mailbox --network $NETWORK \
+            -p ${MAILBOX_PORT}:${MAILBOX_PORT} \
+            -v "$(pwd)/data/mailbox:/app/data" \
+            $MAILBOX_IMG --port $MAILBOX_PORT >/dev/null
+        sleep 1
+        echo "Mailbox server started on port $MAILBOX_PORT"
+    fi
+}
+
 ensure_bootstrap() {
     if ! docker ps --format '{{.Names}}' | grep -q '^bootstrap$'; then
         docker rm -f bootstrap 2>/dev/null || true
@@ -42,8 +56,69 @@ ensure_bootstrap() {
     fi
 }
 
+infra() {
+    local host_ip="${1:?Usage: ./run.sh infra <your-reachable-ip-or-hostname>}"
+    ensure_network
+    ensure_mailbox_public
+    if ! docker ps --format '{{.Names}}' | grep -q '^bootstrap$'; then
+        docker rm -f bootstrap 2>/dev/null || true
+        docker run -d --name bootstrap --network $NETWORK \
+            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} $BOOTSTRAP_IMG \
+            --port $BOOTSTRAP_PORT --dashboard-port $DASHBOARD_PORT --mailbox ${host_ip}:${MAILBOX_PORT} >/dev/null
+        sleep 1
+        echo "Bootstrap server started on port $BOOTSTRAP_PORT (Dashboard: $DASHBOARD_PORT)"
+    fi
+    echo ""
+    echo "Infrastructure ready:"
+    echo "  Bootstrap: ${host_ip}:${BOOTSTRAP_PORT}"
+    echo "  Dashboard: http://${host_ip}:${DASHBOARD_PORT}"
+    echo "  Mailbox:   ${host_ip}:${MAILBOX_PORT}"
+    echo ""
+    echo "Other machines can join with:"
+    echo "  ./run.sh join <username> <their-ip> ${host_ip}:${BOOTSTRAP_PORT}"
+}
+
 random_port() {
     echo $((RANDOM % 50000 + 10000))
+}
+
+start_peer_container() {
+    local username="${1:?missing username}"
+    local advertise_host="${2:?missing advertised host}"
+    local bootstrap_addr="${3:?missing bootstrap address}"
+    local mailbox_addr="${4:?missing mailbox address}"
+    local web_port="${5:?missing web port}"
+
+    local peer_port=$((web_port + 1000))
+    local file_port=$((peer_port + 1000))
+    local container_name="peer-${username}"
+    local data_dir="$(pwd)/data/peers/${username}"
+
+    if [ "$file_port" -gt 65535 ]; then
+        echo "Invalid web port: file port would be $file_port (> 65535)."
+        exit 1
+    fi
+
+    docker rm -f $container_name 2>/dev/null || true
+    mkdir -p "$data_dir"
+
+    docker run -d --name $container_name --network $NETWORK \
+        -p ${peer_port}:${peer_port} -p ${file_port}:${file_port} -p ${web_port}:${web_port} \
+        -v "$data_dir:/app/data" \
+        $PEER_IMG \
+        --username "$username" --host "$advertise_host" --port $peer_port \
+        --bootstrap "$bootstrap_addr" --mailbox "$mailbox_addr" --web $web_port >/dev/null
+
+    sleep 1
+    echo ""
+    echo "Peer '$username' started:"
+    echo "  Web UI:    http://localhost:${web_port}"
+    echo "  Advertise: ${advertise_host}:${peer_port}"
+    echo "  P2P port:  $peer_port"
+    echo "  File port: $file_port"
+    echo "  Bootstrap: $bootstrap_addr"
+    echo "  Mailbox:   $mailbox_addr"
+    echo ""
 }
 
 build() {
@@ -67,27 +142,28 @@ peer() {
         else web_port=$(random_port); fi
     fi
 
-    local peer_port=$((web_port + 1000))
-    local file_port=$((peer_port + 1000))
-    local container_name="peer-${username}"
-    local data_dir="$(pwd)/data/peers/${username}"
+    start_peer_container "$username" "peer-${username}" "bootstrap:${BOOTSTRAP_PORT}" "mailbox:${MAILBOX_PORT}" "$web_port"
+    gen_index
+}
 
-    docker rm -f $container_name 2>/dev/null || true
-    mkdir -p "$data_dir"
+join() {
+    local username="${1:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
+    local host_ip="${2:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
+    local bootstrap_addr="${3:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
+    local web_port="$4"
+    local mailbox_addr="$5"
 
-    docker run -d --name $container_name --network $NETWORK \
-        -p ${peer_port}:${peer_port} -p ${file_port}:${file_port} -p ${web_port}:${web_port} \
-        -v "$data_dir:/app/data" \
-        $PEER_IMG \
-        --username "$username" --host $container_name --port $peer_port \
-        --bootstrap bootstrap:${BOOTSTRAP_PORT} --mailbox mailbox:${MAILBOX_PORT} --web $web_port >/dev/null
+    ensure_network
 
-    sleep 1
-    echo ""
-    echo "Peer '$username' started:"
-    echo "  Web UI: http://localhost:${web_port}"
-    echo "  P2P port: $peer_port"
-    echo ""
+    if [ -z "$web_port" ]; then
+        web_port=$(random_port)
+    fi
+    if [ -z "$mailbox_addr" ]; then
+        local bootstrap_host="${bootstrap_addr%%:*}"
+        mailbox_addr="${bootstrap_host}:${MAILBOX_PORT}"
+    fi
+
+    start_peer_container "$username" "$host_ip" "$bootstrap_addr" "$mailbox_addr" "$web_port"
     gen_index
 }
 
@@ -184,21 +260,36 @@ urls() {
     list
 }
 
+launcher() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 is required to run the launcher."
+        exit 1
+    fi
+    python3 peer-launcher.py
+}
+
 case "${1:-help}" in
     build)  build ;;
     peer)   peer "$2" "$3" ;;
+    infra)  infra "$2" ;;
+    join)   join "$2" "$3" "$4" "$5" "$6" ;;
     start)  start "$2" "$3" ;;
     stop)   stop ;;
     logs)   logs "$2" ;;
     list)   list ;;
     urls)   urls ;;
+    launcher) launcher ;;
     restart) stop; start "$2" "$3" ;;
     help|*)
         echo "Usage: ./run.sh <command>"
         echo ""
         echo "  ./run.sh build              Build images"
         echo "  ./run.sh peer <name>        Start 1 peer with random ports"
+        echo "  ./run.sh infra <host-ip>    Start mailbox + bootstrap for remote peers"
+        echo "  ./run.sh join <name> <host-ip> <bootstrap> [web] [mailbox]"
+        echo "                              Join remote bootstrap as a peer"
         echo "  ./run.sh start [n1] [n2]    Start 2 peers (default: alice, bob)"
+        echo "  ./run.sh launcher           Open localhost UI to create peers"
         echo "  ./run.sh list               List running peers + URLs"
         echo "  ./run.sh urls               Mở file peers-index.html (clickable links cho tất cả peer)"
         echo "  ./run.sh logs [name|s]      Follow logs"

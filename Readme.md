@@ -4,6 +4,88 @@ P2PChat là hệ thống chat peer-to-peer viết bằng Java 17, có Web UI Rea
 
 Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstrap server chỉ giữ vai trò discovery/registry và điều phối endpoint mailbox; dữ liệu offline được tách sang `mailbox-server`.
 
+## Hướng dẫn sử dụng nhanh
+
+### 1. Chuẩn bị
+
+Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, nên dùng Tailscale hoặc ZeroTier để lấy IP riêng của từng máy.
+
+Ví dụ:
+
+```text
+Máy host: 100.64.1.10
+Máy bạn: 100.64.1.20
+```
+
+Build image trên mỗi máy:
+
+```bash
+./run.sh build
+```
+
+### 2. Máy host tạo mạng chat
+
+Trên máy sẽ chạy bootstrap + mailbox:
+
+```bash
+./run.sh launcher
+```
+
+Mở:
+
+```text
+http://localhost:9200
+```
+
+Nhập form:
+
+```text
+Username: you
+IP máy này: 100.64.1.10
+Bootstrap server: để trống
+Mailbox server: để trống
+Web port: để trống
+```
+
+Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
+
+### 3. Máy còn lại tham gia
+
+Trên máy bạn bè:
+
+```bash
+./run.sh launcher
+```
+
+Mở:
+
+```text
+http://localhost:9200
+```
+
+Nhập form:
+
+```text
+Username: friend
+IP máy này: 100.64.1.20
+Bootstrap server: 100.64.1.10:9000
+Mailbox server: để trống
+Web port: để trống
+```
+
+Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
+
+### 4. Chat
+
+Trong Web UI, bấm refresh/discover nếu chưa thấy peer, chọn tên peer còn lại rồi nhắn tin.
+
+Ghi nhớ:
+
+- `IP máy này` là IP Tailscale/ZeroTier/public của chính máy đang tạo peer.
+- Máy host để trống `Bootstrap server`.
+- Máy tham gia nhập `Bootstrap server` là `IP máy host:9000`.
+- `Web port` có thể để trống để launcher tự chọn.
+
 ## Kiến trúc
 
 ```text
@@ -234,6 +316,26 @@ Hạ tầng mặc định khi dùng `run.sh`:
 
 ### Thêm peer
 
+#### Đăng ký peer bằng giao diện
+
+Sau khi build image, chạy launcher trên máy host:
+
+```bash
+./run.sh launcher
+```
+
+Mở:
+
+```text
+http://localhost:9200
+```
+
+Nhập `username`, có thể bỏ trống `web port` để launcher tự chọn port còn trống. Nếu chat khác mạng, nhập `IP máy này` là IP VPN/public của máy đang tạo peer. Máy làm bootstrap/mailbox thì để trống `Bootstrap server`; launcher sẽ tự tạo bootstrap/mailbox và quảng bá mailbox bằng IP bạn nhập. Máy tham gia thì nhập `Bootstrap server`, ví dụ `100.64.1.10:9000`.
+
+Launcher chỉ bind `127.0.0.1:9200` và chỉ chấp nhận username gồm chữ, số, `_`, `-`.
+
+#### Tạo peer bằng command
+
 ```bash
 ./run.sh peer charlie
 ./run.sh peer dave 33150
@@ -246,12 +348,104 @@ Nếu không truyền web port, script tự chọn port ngẫu nhiên, riêng `a
 ```bash
 ./run.sh list               # Liệt kê peer đang chạy và URL
 ./run.sh urls               # Cập nhật peers-index.html rồi in danh sách URL
+./run.sh launcher           # Mở giao diện đăng ký peer mới
 ./run.sh logs alice         # Follow log peer alice
 ./run.sh logs s             # Follow log bootstrap
 ./run.sh logs all           # Follow log các peer
 ./run.sh stop               # Dừng bootstrap, mailbox và tất cả peer
 ./run.sh restart            # Stop rồi start lại stack mặc định
 ```
+
+### Chạy 2 máy không cùng LAN/WiFi
+
+Khuyến nghị dùng Tailscale hoặc ZeroTier để mỗi máy có một IP riêng có thể truy cập lẫn nhau. Ví dụ:
+
+```text
+Máy bạn:      100.64.1.10
+Máy bạn bạn: 100.64.1.20
+```
+
+Máy bạn làm bootstrap + mailbox bằng giao diện:
+
+```bash
+./run.sh build
+./run.sh launcher
+```
+
+Mở `http://localhost:9200`, nhập:
+
+```text
+Username: you
+IP máy này: 100.64.1.10
+Bootstrap server: để trống
+Mailbox server: để trống
+Web port: 33143
+```
+
+Máy bạn bạn tham gia bằng giao diện:
+
+```bash
+./run.sh build
+./run.sh launcher
+```
+
+Mở `http://localhost:9200`, nhập:
+
+```text
+Username: friend
+IP máy này: 100.64.1.20
+Bootstrap server: 100.64.1.10:9000
+Mailbox server: để trống
+Web port: 33144
+```
+
+Tóm tắt cho người bạn muốn tham gia:
+
+```bash
+cd P2PChat
+./run.sh build
+./run.sh launcher
+```
+
+Sau đó mở `http://localhost:9200` và nhập:
+
+```text
+Username: tên của bạn ấy
+IP máy này: IP Tailscale của máy bạn ấy
+Bootstrap server: IP Tailscale máy chủ:9000
+Mailbox server: để trống
+Web port: để trống
+```
+
+Sau khi bấm `Register and start peer`, launcher sẽ hiện link Web UI dạng `http://localhost:<port>`. Bạn ấy bấm link đó để vào ứng dụng chat.
+
+Cách command tương đương nếu cần:
+
+```bash
+./run.sh build
+./run.sh infra 100.64.1.10
+./run.sh join you 100.64.1.10 100.64.1.10:9000 33143
+./run.sh join friend 100.64.1.20 100.64.1.10:9000 33144
+```
+
+Sau đó mỗi người mở Web UI local của mình:
+
+```text
+Máy bạn:      http://localhost:33143
+Máy bạn bạn: http://localhost:33144
+```
+
+Điểm quan trọng: tham số thứ hai của `join` là IP/hostname mà máy còn lại truy cập được tới peer đó. Không dùng tên Docker container cho trường hợp khác mạng.
+
+Các port cần thông được qua VPN/firewall:
+
+| Port | Vai trò |
+|---:|---|
+| `9000` | Bootstrap TCP trên máy bạn |
+| `9001` | Bootstrap dashboard trên máy bạn |
+| `9100` | Mailbox TCP trên máy bạn |
+| `webPort + 1000` | Peer TCP của mỗi máy |
+| `webPort + 2000` | File transfer TCP của mỗi máy |
 
 Dữ liệu Docker được mount vào:
 
