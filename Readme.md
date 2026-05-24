@@ -8,7 +8,7 @@ Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstra
 
 ### 1. Chuẩn bị
 
-Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, nên dùng Tailscale hoặc ZeroTier để lấy IP riêng của từng máy.
+Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, dùng Tailscale để lấy IP riêng của từng máy.
 
 Ví dụ:
 
@@ -74,6 +74,14 @@ Web port: để trống
 ```
 
 Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
+
+Nếu đã từng tạo peer và lỡ tắt tab trình duyệt, chỉ cần chạy lại:
+
+```bash
+./run.sh launcher
+```
+
+Mở `http://localhost:9200`, bấm `Open` ở phần `Continue` để vào lại đúng peer. Nếu container peer đang stopped, nút đó sẽ là `Start`.
 
 ### 4. Chat
 

@@ -141,6 +141,25 @@ def peers():
     return items
 
 
+def start_existing_peer(username):
+    if not USERNAME_RE.match(username):
+        raise ValueError("Invalid username")
+    container = f"peer-{username}"
+    if container not in docker_names():
+        raise ValueError(f"Peer '{username}' không tồn tại")
+    if container not in running_names():
+        run(["docker", "start", container])
+    web = container_web_port(container)
+    if not web:
+        raise ValueError(f"Không tìm thấy web port cho peer '{username}'")
+    return {
+        "username": username,
+        "webPort": web,
+        "url": f"http://localhost:{web}",
+        "running": True,
+    }
+
+
 def validate_peer_request(payload):
     username = str(payload.get("username", "")).strip()
     if not USERNAME_RE.match(username):
@@ -185,7 +204,9 @@ def create_peer(payload):
     username, advertised_host, advertised_host_provided, bootstrap_addr, mailbox_addr, use_local_infra, web_port, peer_port, file_port = validate_peer_request(payload)
     container = f"peer-{username}"
     if container in docker_names():
-        raise ValueError(f"Peer '{username}' đã tồn tại. Hãy chọn username khác hoặc xóa container cũ.")
+        existing = start_existing_peer(username)
+        existing["alreadyExists"] = True
+        return existing
 
     ensure_network()
     if use_local_infra:
@@ -266,7 +287,7 @@ PAGE = """<!doctype html>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Inter, Segoe UI, system-ui, sans-serif; background: #101828; color: #e4e7ec; }
     main { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    .panel { width: min(520px, 100%); background: #182230; border: 1px solid #344054; border-radius: 8px; padding: 22px; }
+    .panel { width: min(560px, 100%); background: #182230; border: 1px solid #344054; border-radius: 8px; padding: 22px; }
     h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
     .muted { color: #98a2b3; }
     .subtitle { margin: 8px 0 22px; line-height: 1.45; }
@@ -279,14 +300,28 @@ PAGE = """<!doctype html>
     .toast.error { border-color: #f04438; color: #fda29b; }
     .open-link { display: block; margin-top: 10px; color: #7dd3fc; font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
     .open-link:hover { text-decoration: underline; }
+    .continue { display: none; margin-bottom: 18px; padding: 14px; border: 1px solid #344054; border-radius: 8px; background: #101828; }
+    .continue h2 { margin: 0 0 10px; font-size: 16px; }
+    .peer-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid #263241; }
+    .peer-row:first-of-type { border-top: 0; padding-top: 0; }
+    .peer-name { font-weight: 800; }
+    .peer-url { margin-top: 4px; color: #98a2b3; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .open-btn { display: inline-block; border-radius: 6px; padding: 9px 12px; background: #2e90fa; color: #fff; text-decoration: none; font-size: 13px; font-weight: 800; }
+    .open-btn.stopped { background: #475467; }
+    .divider { height: 1px; margin: 18px 0; background: #344054; }
   </style>
 </head>
 <body>
   <main>
     <div class="panel">
-      <h1>Register peer</h1>
-      <div class="muted subtitle">Tạo một peer mới bằng Docker mà không cần gõ username hoặc port trong terminal.</div>
+      <h1>P2PChat</h1>
+      <div class="muted subtitle">Mở lại peer đang có hoặc đăng ký một peer mới trên máy này.</div>
+      <section class="continue" id="continueBox">
+        <h2>Continue</h2>
+        <div id="existingPeers"></div>
+      </section>
       <form id="form">
+        <div class="divider"></div>
         <label>Username
           <input name="username" placeholder="charlie" autocomplete="off" required pattern="[A-Za-z0-9_-]{1,32}" />
         </label>
@@ -312,6 +347,8 @@ PAGE = """<!doctype html>
     const msgEl = document.getElementById('message');
     const form = document.getElementById('form');
     const createBtn = document.getElementById('createBtn');
+    const continueBox = document.getElementById('continueBox');
+    const existingPeersEl = document.getElementById('existingPeers');
 
     function toast(text, isError = false) {
       msgEl.innerHTML = text ? `<div class="toast ${isError ? 'error' : ''}">${text}</div>` : '';
@@ -321,6 +358,33 @@ PAGE = """<!doctype html>
       return String(value).replace(/[&<>"']/g, (ch) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[ch]));
+    }
+
+    async function loadExistingPeers() {
+      try {
+        const res = await fetch('/api/peers');
+        const data = await res.json();
+        const peers = data.peers || [];
+        if (!peers.length) {
+          continueBox.style.display = 'none';
+          return;
+        }
+        continueBox.style.display = 'block';
+        existingPeersEl.innerHTML = peers.map((peer) => {
+          const username = escapeHtml(peer.username);
+          const url = escapeHtml(peer.url || '');
+          const state = peer.running ? 'Open' : 'Start';
+          return `<div class="peer-row">
+            <div>
+              <div class="peer-name">@${username} ${peer.running ? '' : '<span class="muted">(stopped)</span>'}</div>
+              <div class="peer-url">${url || 'No web port found'}</div>
+            </div>
+            <a class="open-btn ${peer.running ? '' : 'stopped'}" href="/open/${username}">${state}</a>
+          </div>`;
+        }).join('');
+      } catch (error) {
+        continueBox.style.display = 'none';
+      }
     }
 
     form.addEventListener('submit', async (event) => {
@@ -337,17 +401,18 @@ PAGE = """<!doctype html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Create peer failed');
         const username = escapeHtml(data.username);
-        const advertisedHost = escapeHtml(data.advertisedHost);
-        const peerPort = escapeHtml(data.peerPort);
         const url = escapeHtml(data.url);
-        toast(`Đã tạo @${username}.<br>Advertise: ${advertisedHost}:${peerPort}<a class="open-link" target="_blank" href="${url}">Mở peer: ${url}</a>`);
+        const prefix = data.alreadyExists ? `@${username} đã tồn tại, đã mở lại peer.` : `Đã tạo @${username}.`;
+        toast(`${prefix}<a class="open-link" target="_blank" href="${url}">Mở peer: ${url}</a>`);
         form.reset();
+        loadExistingPeers();
       } catch (error) {
         toast(error.message, true);
       } finally {
         createBtn.disabled = false;
       }
     });
+    loadExistingPeers();
   </script>
 </body>
 </html>
@@ -375,6 +440,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/peers":
             self.send_json(200, {"peers": peers()})
+            return
+        if path.startswith("/open/"):
+            username = path.removeprefix("/open/").strip()
+            try:
+                peer = start_existing_peer(username)
+                self.send_response(302)
+                self.send_header("Location", peer["url"])
+                self.end_headers()
+            except Exception as exc:
+                body = f"Failed to open peer: {html.escape(str(exc))}".encode("utf-8")
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             return
         self.send_json(404, {"error": "Not found"})
 
