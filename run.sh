@@ -11,6 +11,95 @@ BOOTSTRAP_PORT=9000
 DASHBOARD_PORT=9001
 MAILBOX_PORT=9100
 
+image_exists() {
+    docker image inspect "$1:latest" >/dev/null 2>&1
+}
+
+ensure_images() {
+    if ! image_exists "$MAILBOX_IMG" || ! image_exists "$BOOTSTRAP_IMG" || ! image_exists "$PEER_IMG"; then
+        echo "Docker images are missing; building first..."
+        build
+    fi
+}
+
+best_host_ip() {
+    local ts_ip
+    if command -v tailscale >/dev/null 2>&1; then
+        ts_ip=$(tailscale ip -4 2>/dev/null | awk 'NR==1 {print $1}')
+        if [ -n "$ts_ip" ]; then
+            echo "$ts_ip"
+            return
+        fi
+    fi
+
+    if command -v ip >/dev/null 2>&1; then
+        ip -o -4 addr show scope global 2>/dev/null | awk '
+            {
+                split($4, a, "/");
+                ip=a[1];
+                if (ip ~ /^127\\./) next;
+                if (ip ~ /^169\\.254\\./) next;
+                if (ip ~ /^172\\.(1[7-9]|2[0-9]|3[0-1])\\./) next;
+                print ip;
+                exit;
+            }'
+        return
+    fi
+}
+
+docker_reserved_ports() {
+    for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null); do
+        docker inspect -f '{{range $containerPort, $bindings := .HostConfig.PortBindings}}{{range $bindings}}{{println .HostPort}}{{end}}{{end}}' "$c" 2>/dev/null || true
+    done | awk 'NF {print $1}' | sort -n | uniq
+}
+
+port_available() {
+    local port="$1"
+    python3 - "$port" <<'PY' >/dev/null 2>&1
+import socket, sys
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("127.0.0.1", port))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PY
+}
+
+port_reserved() {
+    local needle="$1"
+    docker_reserved_ports | awk -v p="$needle" '$1 == p { found=1 } END { exit found ? 0 : 1 }'
+}
+
+choose_web_port() {
+    local port
+    for port in $(seq 33143 60999); do
+        port_reserved "$port" && continue
+        port_reserved "$((port + 1000))" && continue
+        port_reserved "$((port + 2000))" && continue
+        port_available "$port" && port_available "$((port + 1000))" && port_available "$((port + 2000))" && {
+            echo "$port"
+            return
+        }
+    done
+    echo "No free port range found" >&2
+    exit 1
+}
+
+detect_host_for_bootstrap() {
+    local bootstrap_addr="${1:?missing bootstrap address}"
+    python3 - "$bootstrap_addr" <<'PY'
+import socket, sys
+addr = sys.argv[1]
+host, port = addr.rsplit(":", 1)
+with socket.create_connection((host, int(port)), timeout=3) as sock:
+    print(sock.getsockname()[0])
+PY
+}
+
 ensure_network() {
     docker network inspect $NETWORK >/dev/null 2>&1 || docker network create $NETWORK >/dev/null
 }
@@ -49,11 +138,17 @@ ensure_bootstrap() {
         ensure_network
         ensure_mailbox
         mkdir -p "$(pwd)/data/bootstrap"
+        local host_ip
+        host_ip=$(best_host_ip)
+        local mailbox_addr="mailbox:${MAILBOX_PORT}"
+        if [ -n "$host_ip" ]; then
+            mailbox_addr="${host_ip}:${MAILBOX_PORT}"
+        fi
         docker run -d --name bootstrap --network $NETWORK \
             -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} \
             -v "$(pwd)/data/bootstrap:/app/data" \
             $BOOTSTRAP_IMG \
-            --port $BOOTSTRAP_PORT --dashboard-port $DASHBOARD_PORT --mailbox mailbox:${MAILBOX_PORT} >/dev/null
+            --port $BOOTSTRAP_PORT --dashboard-port $DASHBOARD_PORT --mailbox "$mailbox_addr" >/dev/null
         sleep 1
         echo "Bootstrap server started on port $BOOTSTRAP_PORT (Dashboard: $DASHBOARD_PORT)"
     fi
@@ -84,10 +179,6 @@ infra() {
     echo "  ./run.sh join <username> <their-ip> ${host_ip}:${BOOTSTRAP_PORT}"
 }
 
-random_port() {
-    echo $((RANDOM % 50000 + 10000))
-}
-
 start_peer_container() {
     local username="${1:?missing username}"
     local advertise_host="${2:?missing advertised host}"
@@ -104,8 +195,19 @@ start_peer_container() {
         echo "Invalid web port: file port would be $file_port (> 65535)."
         exit 1
     fi
-
     docker rm -f $container_name 2>/dev/null || true
+
+    for port in "$web_port" "$peer_port" "$file_port"; do
+        if port_reserved "$port"; then
+            echo "Port $port is already reserved by another Docker container."
+            exit 1
+        fi
+        if ! port_available "$port"; then
+            echo "Port $port is already in use."
+            exit 1
+        fi
+    done
+
     mkdir -p "$data_dir"
 
     docker run -d --name $container_name --network $NETWORK \
@@ -138,6 +240,7 @@ build() {
 peer() {
     local username="${1:?Usage: ./run.sh peer <username>}"
     local web_port="$2"
+    ensure_images
     ensure_network
     ensure_mailbox
     ensure_bootstrap
@@ -145,24 +248,42 @@ peer() {
     if [ -z "$web_port" ]; then
         if [ "$username" = "alice" ]; then web_port=33143;
         elif [ "$username" = "bob" ]; then web_port=33144;
-        else web_port=$(random_port); fi
+        else web_port=$(choose_web_port); fi
     fi
 
-    start_peer_container "$username" "peer-${username}" "bootstrap:${BOOTSTRAP_PORT}" "mailbox:${MAILBOX_PORT}" "$web_port"
+    local advertise_host
+    advertise_host=$(best_host_ip)
+    if [ -z "$advertise_host" ]; then
+        advertise_host="peer-${username}"
+    fi
+    start_peer_container "$username" "$advertise_host" "bootstrap:${BOOTSTRAP_PORT}" "mailbox:${MAILBOX_PORT}" "$web_port"
     gen_index
 }
 
 join() {
-    local username="${1:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
-    local host_ip="${2:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
-    local bootstrap_addr="${3:?Usage: ./run.sh join <username> <your-reachable-ip-or-hostname> <bootstrap-host:port> [web-port] [mailbox-host:port]}"
+    local username="${1:?Usage: ./run.sh join <username> [your-reachable-ip-or-auto] <bootstrap-host:port> [web-port] [mailbox-host:port]}"
+    local host_ip="$2"
+    local bootstrap_addr="$3"
     local web_port="$4"
     local mailbox_addr="$5"
+
+    if [[ "$host_ip" == *:* && -z "$bootstrap_addr" ]]; then
+        bootstrap_addr="$host_ip"
+        host_ip="auto"
+    fi
+    if [ -z "$bootstrap_addr" ]; then
+        echo "Usage: ./run.sh join <username> [your-reachable-ip-or-auto] <bootstrap-host:port> [web-port] [mailbox-host:port]"
+        exit 1
+    fi
+    ensure_images
 
     ensure_network
 
     if [ -z "$web_port" ]; then
-        web_port=$(random_port)
+        web_port=$(choose_web_port)
+    fi
+    if [ -z "$host_ip" ] || [ "$host_ip" = "auto" ]; then
+        host_ip=$(detect_host_for_bootstrap "$bootstrap_addr")
     fi
     if [ -z "$mailbox_addr" ]; then
         local bootstrap_host="${bootstrap_addr%%:*}"
@@ -266,10 +387,44 @@ urls() {
     list
 }
 
+doctor() {
+    echo "Local Tailscale IP: $(tailscale ip -4 2>/dev/null | awk 'NR==1 {print $1}')"
+    echo "Best advertise IP: $(best_host_ip)"
+    echo ""
+    echo "Docker peers:"
+    docker ps --filter "name=^peer-" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    echo ""
+    echo "Listening ports:"
+    ss -ltnp | grep -E ":(${BOOTSTRAP_PORT}|${MAILBOX_PORT}|3[0-9]{4})" || true
+    echo ""
+    if [ -n "$1" ] && [ -n "$2" ]; then
+        echo "Remote direct check: $1:$2"
+        nc -vz -w 6 "$1" "$2"
+    else
+        echo "Remote direct check usage: ./run.sh doctor <remote-tailscale-ip> <peer-port>"
+    fi
+}
+
 launcher() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo "python3 is required to run the launcher."
         exit 1
+    fi
+    ensure_images
+    # Kill any existing launcher (matches `python3 peer-launcher.py`) so a fresh
+    # process picks up code changes without manual cleanup.
+    local existing
+    existing=$(pgrep -f "python3 .*peer-launcher\.py" | grep -v $$ || true)
+    if [ -n "$existing" ]; then
+        echo "Stopping existing launcher: $existing"
+        kill $existing 2>/dev/null || true
+        # Give the socket time to free.
+        for _ in 1 2 3 4 5; do
+            pgrep -f "python3 .*peer-launcher\.py" | grep -v $$ >/dev/null || break
+            sleep 0.3
+        done
+        # Force kill anything still alive.
+        pgrep -f "python3 .*peer-launcher\.py" | grep -v $$ | xargs -r kill -9 2>/dev/null || true
     fi
     python3 peer-launcher.py
 }
@@ -284,6 +439,7 @@ case "${1:-help}" in
     logs)   logs "$2" ;;
     list)   list ;;
     urls)   urls ;;
+    doctor) doctor "$2" "$3" ;;
     launcher) launcher ;;
     restart) stop; start "$2" "$3" ;;
     help|*)
@@ -298,6 +454,7 @@ case "${1:-help}" in
         echo "  ./run.sh launcher           Open localhost UI to create peers"
         echo "  ./run.sh list               List running peers + URLs"
         echo "  ./run.sh urls               Mở file peers-index.html (clickable links cho tất cả peer)"
+        echo "  ./run.sh doctor [ip port]   Check local config and optional remote direct TCP"
         echo "  ./run.sh logs [name|s]      Follow logs"
         echo "  ./run.sh stop               Stop all"
         echo "  ./run.sh restart [n1] [n2]  Restart all"

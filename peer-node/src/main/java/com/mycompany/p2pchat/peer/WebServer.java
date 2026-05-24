@@ -307,12 +307,32 @@ public class WebServer {
             // Resolve member addresses
             List<String> memberAddresses = new ArrayList<>();
             memberAddresses.add(peerManager.getLocalAddress());
+            List<String> missingMembers = new ArrayList<>();
+            List<String> unreachableMembers = new ArrayList<>();
             for (String uname : memberUsernames) {
                 PeerInfo peer = peerManager.getPeer(uname);
                 if (peer != null && peer.isOnline()) {
+                    if (!canConnectAddress(peer.getAddress())) {
+                        unreachableMembers.add(uname + "@" + peer.getAddress());
+                        continue;
+                    }
                     memberAddresses.add(peer.getAddress());
                     peerManager.getRecentPeersCache().upsert(uname, peer.getAddress());
+                } else {
+                    missingMembers.add(uname);
                 }
+            }
+            if (!missingMembers.isEmpty() || !unreachableMembers.isEmpty()) {
+                Map<String, Object> error = new HashMap<>();
+                error.put("error", "Some group members are not direct-reachable");
+                error.put("missingOrOffline", missingMembers);
+                error.put("unreachable", unreachableMembers);
+                ctx.status(409).contentType("application/json").result(gson.toJson(error));
+                return;
+            }
+            if (memberAddresses.size() != memberUsernames.size() + 1) {
+                ctx.status(409).result(gson.toJson(Map.of("error", "Group member resolution failed")));
+                return;
             }
 
             // Create GroupInfo
@@ -376,6 +396,13 @@ public class WebServer {
             if (entry == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Group not found"))); return; }
             PeerInfo peer = peerManager.getPeer(username);
             if (peer == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Peer not found"))); return; }
+            if (!peer.isOnline() || !canConnectAddress(peer.getAddress())) {
+                ctx.status(409).result(gson.toJson(Map.of(
+                        "error", "Peer is not direct-reachable",
+                        "peer", username,
+                        "address", peer.getAddress())));
+                return;
+            }
             peerManager.getRecentPeersCache().upsert(username, peer.getAddress());
 
             Message addMsg = Message.builder()
@@ -403,6 +430,13 @@ public class WebServer {
             }
             PeerInfo targetPeer = peerManager.getPeer(target);
             String targetAddr = targetPeer != null ? targetPeer.getAddress() : target;
+            if (!canConnectAddress(targetAddr)) {
+                ctx.status(409).result(gson.toJson(Map.of(
+                        "error", "Target is not direct-reachable; kick notification would be lost",
+                        "target", target,
+                        "address", targetAddr)));
+                return;
+            }
 
             Message kickMsg = Message.builder()
                     .type(MessageType.GROUP_KICK.name())
@@ -584,6 +618,18 @@ public class WebServer {
             }
         } catch (Exception e) {
             logger.warning("Discover failed: " + e.getMessage());
+        }
+    }
+
+    private boolean canConnectAddress(String address) {
+        if (address == null || address.isBlank()) return false;
+        String[] parts = address.split(":");
+        if (parts.length != 2) return false;
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 

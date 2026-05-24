@@ -71,6 +71,7 @@ public class MailboxServer {
                 case STORE_MESSAGE -> handleStore(msg);
                 case PULL_MESSAGES -> handlePull(msg);
                 case DELIVERY_ACK -> handleDeliveryAck(msg);
+                case CHECK_DELIVERY -> handleCheckDelivery(msg);
                 default -> error("Unsupported mailbox message type: " + msg.getType());
             };
         } catch (IllegalArgumentException e) {
@@ -125,6 +126,20 @@ public class MailboxServer {
                 JsonUtil.toJson(new DeliveryAckResult(messageId, updated ? "DELIVERED" : "NOT_FOUND")));
     }
 
+    private WireMessage handleCheckDelivery(WireMessage msg) throws SQLException {
+        String sender = msg.getSender();
+        if (sender == null || sender.isBlank() || msg.getContent() == null || msg.getContent().isBlank()) {
+            return error("Missing sender or messageId list for CHECK_DELIVERY");
+        }
+        CheckDeliveryRequest req = JsonUtil.fromJson(msg.getContent(), CheckDeliveryRequest.class);
+        if (req == null || req.messageIds == null || req.messageIds.isEmpty()) {
+            return WireMessage.of(MessageType.CHECK_DELIVERY_RESPONSE.name(), "mailbox", sender, "[]");
+        }
+        List<String> delivered = repository.getDeliveredMessageIds(sender, req.messageIds);
+        return WireMessage.of(MessageType.CHECK_DELIVERY_RESPONSE.name(), "mailbox", sender,
+                JsonUtil.toJson(delivered));
+    }
+
     private void validateEnvelope(MailboxEnvelope env) {
         if (env == null) throw new IllegalArgumentException("Missing envelope");
         if (isBlank(env.messageId)) throw new IllegalArgumentException("Missing messageId");
@@ -164,6 +179,10 @@ public class MailboxServer {
     private static class DeliveryAck {
         String receiver;
         String messageId;
+    }
+
+    private static class CheckDeliveryRequest {
+        List<String> messageIds;
     }
 
     private static class DeliveryAckResult {

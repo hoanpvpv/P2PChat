@@ -186,6 +186,32 @@ public class PeerClient {
         return delivered;
     }
 
+    /**
+     * Poll mailbox for messages we sent that have now been delivered to the receiver.
+     * For each one, promote outbox state STORED_MAILBOX → DELIVERED and push an
+     * OUTBOX_UPDATE event so the sender UI can show "đã nhận" instead of staying on
+     * "đã lưu mailbox" forever.
+     */
+    public void pollMailboxDeliveries() {
+        List<String> pending = peerManager.getOutboxRepository().messageIdsAwaitingMailboxDelivery(100);
+        if (pending.isEmpty()) return;
+        List<String> delivered;
+        try {
+            delivered = mailboxClient.checkDelivered(pending);
+        } catch (Exception e) {
+            logger.fine("checkDelivered failed: " + e.getMessage());
+            return;
+        }
+        for (String id : delivered) {
+            String receiver = peerManager.getOutboxRepository().receiverFor(id);
+            peerManager.getOutboxRepository().markDelivered(id);
+            notifyOutboxState(id, "DELIVERED_VIA_MAILBOX", receiver);
+        }
+        if (!delivered.isEmpty()) {
+            logger.info("Mailbox delivery confirmed for " + delivered.size() + " messages");
+        }
+    }
+
     public void gossipAckToMailbox(String messageId) {
         try { mailboxClient.deliveryAck(messageId); }
         catch (Exception e) { logger.fine("gossip ack fail: " + e.getMessage()); }

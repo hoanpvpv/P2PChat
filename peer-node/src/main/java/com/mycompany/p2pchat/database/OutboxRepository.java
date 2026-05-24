@@ -156,6 +156,40 @@ public class OutboxRepository {
         return entries;
     }
 
+    /**
+     * IDs in outbox that are sitting in mailbox waiting for the receiver to pull.
+     * The sender polls these against the mailbox to discover when receivers pick them up,
+     * so the outbox state can be promoted from STORED_MAILBOX to DELIVERED.
+     */
+    public List<String> messageIdsAwaitingMailboxDelivery(int limit) {
+        String sql = """
+                SELECT message_id FROM outbound_messages
+                WHERE state = 'STORED_MAILBOX'
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """;
+        List<String> ids = new ArrayList<>();
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setInt(1, Math.max(1, limit));
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) ids.add(rs.getString(1));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list pending mailbox deliveries", e);
+        }
+        return ids;
+    }
+
+    public String receiverFor(String messageId) {
+        String sql = "SELECT receiver FROM outbound_messages WHERE message_id = ?";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setString(1, messageId);
+            ResultSet rs = ps.executeQuery();
+            return rs.next() ? rs.getString(1) : null;
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to read outbox receiver", e);
+        }
+    }
+
     public int cleanupDeliveredOlderThan(long cutoffMillis) {
         String sql = "DELETE FROM outbound_messages WHERE state = 'DELIVERED' AND updated_at < ?";
         try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {

@@ -162,6 +162,36 @@ public class MailboxClient {
         return JsonUtil.fromJson(payload);
     }
 
+    /**
+     * Ask the mailbox which of {@code candidateIds} (sent by us) are now DELIVERED.
+     * Used by sender to upgrade outbox state from STORED_MAILBOX → DELIVERED_VIA_MAILBOX
+     * so the UI can show "đã nhận" instead of staying on "đã lưu mailbox" forever.
+     */
+    public List<String> checkDelivered(List<String> candidateIds) throws IOException {
+        if (candidateIds == null || candidateIds.isEmpty()) return List.of();
+        CheckDeliveryRequest req = new CheckDeliveryRequest();
+        req.messageIds = candidateIds;
+        Message wire = Message.builder()
+                .type(MessageType.CHECK_DELIVERY.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .content(GSON.toJson(req))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        Message response = send(wire);
+        if (response == null) return List.of();
+        if (MessageType.ERROR.name().equals(response.getType())) {
+            throw new IOException(response.getContent());
+        }
+        if (!MessageType.CHECK_DELIVERY_RESPONSE.name().equals(response.getType())
+                || response.getContent() == null || response.getContent().isBlank()) {
+            return List.of();
+        }
+        Type listType = new TypeToken<List<String>>() {}.getType();
+        List<String> delivered = GSON.fromJson(response.getContent(), listType);
+        return delivered != null ? delivered : List.of();
+    }
+
     public void deliveryAck(String messageId) throws IOException {
         DeliveryAck ack = new DeliveryAck();
         ack.receiver = peerManager.getLocalUsername();
@@ -244,5 +274,9 @@ public class MailboxClient {
     private static class DeliveryAck {
         String receiver;
         String messageId;
+    }
+
+    private static class CheckDeliveryRequest {
+        List<String> messageIds;
     }
 }

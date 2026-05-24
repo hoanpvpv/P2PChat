@@ -108,7 +108,9 @@ export async function kickFromGroup(groupId, target) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId, target }),
   });
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to kick member');
+  return data;
 }
 
 export async function leaveGroup(groupId, newOwner) {

@@ -13,8 +13,8 @@ public class Constants {
     public static final int HEARTBEAT_TIMEOUT = 15000;
 
     // Messaging
-    public static final int ACK_TIMEOUT = 1500;
-    public static final int MAX_RETRIES = 1;
+    public static final int ACK_TIMEOUT = 6000;
+    public static final int MAX_RETRIES = 2;
     public static final int RECONNECT_INTERVAL = 3000;
     public static final int OUTBOX_MAX_ATTEMPTS = 12;
     public static final long OUTBOX_BACKOFF_BASE_MS = 5000;

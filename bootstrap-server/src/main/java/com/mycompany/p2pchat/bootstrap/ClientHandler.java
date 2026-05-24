@@ -10,6 +10,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.net.InetAddress;
 import java.util.List;
 import java.util.logging.Logger;
 
@@ -91,6 +92,12 @@ public class ClientHandler implements Runnable {
 
         String host = parts[0];
         int port = Integer.parseInt(parts[1]);
+        String remoteHost = socket.getInetAddress().getHostAddress();
+        if (shouldPreferRemoteHost(host, remoteHost)) {
+            logger.warning("Overriding advertised host for " + message.getSender()
+                    + ": " + host + " -> " + remoteHost);
+            host = remoteHost;
+        }
         PeerInfo peerInfo = new PeerInfo(message.getSender(), host, port);
         if (keyParts.length > 1 && !keyParts[1].isBlank()) peerInfo.setKeyId(keyParts[1]);
         if (keyParts.length > 2 && !keyParts[2].isBlank()) peerInfo.setPublicKey(keyParts[2]);
@@ -113,6 +120,45 @@ public class ClientHandler implements Runnable {
         logger.info("Peer registered: " + peerInfo.getUsername() + " -> " + host + ":" + port);
     }
 
+    private boolean shouldPreferRemoteHost(String advertisedHost, String remoteHost) {
+        if (advertisedHost == null || remoteHost == null || advertisedHost.isBlank() || remoteHost.isBlank()) {
+            return false;
+        }
+        if (!isTailscaleIp(remoteHost)) {
+            return false;
+        }
+        if (advertisedHost.equals(remoteHost)) {
+            return false;
+        }
+        return isDockerBridgeIp(advertisedHost) || isTailscaleIp(advertisedHost);
+    }
+
+    private boolean isTailscaleIp(String value) {
+        byte[] bytes = parseIpv4(value);
+        if (bytes == null) return false;
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 100 && second >= 64 && second <= 127;
+    }
+
+    private boolean isDockerBridgeIp(String value) {
+        byte[] bytes = parseIpv4(value);
+        if (bytes == null) return false;
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 172 && second >= 16 && second <= 31;
+    }
+
+    private byte[] parseIpv4(String value) {
+        try {
+            InetAddress address = InetAddress.getByName(value);
+            byte[] bytes = address.getAddress();
+            return bytes.length == 4 ? bytes : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void handleHeartbeat(Message message) {
         if (!registry.contains(message.getSender())) {
             bootstrapServer.getEventLog().warn("HEARTBEAT_UNKNOWN", message.getSender(), "Peer must register again");
@@ -125,7 +171,15 @@ public class ClientHandler implements Runnable {
                     .build());
             return;
         }
-        registry.updateHeartbeat(message.getSender());
+        PeerInfo peer = registry.getPeer(message.getSender());
+        String remoteHost = socket.getInetAddress().getHostAddress();
+        if (peer != null && shouldPreferRemoteHost(peer.getHost(), remoteHost)) {
+            logger.warning("Overriding heartbeat host for " + message.getSender()
+                    + ": " + peer.getHost() + " -> " + remoteHost);
+            registry.updateAddress(message.getSender(), remoteHost, peer.getPort());
+        } else {
+            registry.updateHeartbeat(message.getSender());
+        }
         bootstrapServer.getEventLog().info("HEARTBEAT", message.getSender(), "Heartbeat acknowledged");
         String peerList = registry.getPeerListJson();
         Message ack = ProtocolHandler.createHeartbeatAck();
