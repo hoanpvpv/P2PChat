@@ -193,7 +193,14 @@ public class PeerNode {
             while (running) {
                 try {
                     Thread.sleep(Constants.HEARTBEAT_INTERVAL);
-                    if (peerManager.isRegisteredToBootstrap()) sendHeartbeat();
+                    if (!peerManager.hasLocalIdentity()) continue;
+                    if (peerManager.isRegisteredToBootstrap()) {
+                        sendHeartbeat();
+                    } else if (registerWithBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                        pullMailboxMessagesToWeb();
+                        lazyRepairManager.repairAllOnRestart();
+                    }
                 } catch (InterruptedException e) { break; }
             }
         }, "heartbeat-thread");
@@ -221,7 +228,7 @@ public class PeerNode {
                     peerClient.retryOutboxDelivery();
                     peerManager.getOutboxRepository().cleanupDeliveredOlderThan(
                             System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);
-                    if (peerManager.isRegisteredToBootstrap()) {
+                    if (peerManager.hasLocalIdentity()) {
                         pullMailboxMessagesToWeb();
                         // Promote STORED_MAILBOX → DELIVERED for messages the receiver
                         // has now pulled, so the sender UI stops showing them as pending.
@@ -293,7 +300,7 @@ public class PeerNode {
             }
         } catch (IOException e) {
             logger.fine("Heartbeat failed: " + e.getMessage());
-            peerManager.markBootstrapRegistrationFailure(e.getMessage());
+            peerManager.markBootstrapTransientFailure(e.getMessage());
         }
     }
 

@@ -14,8 +14,10 @@ import './App.css';
 export default function App() {
   const [info, setInfo] = useState({
     username: '', host: '', peerPort: '', webPort: '',
-    bootstrapHost: '', bootstrapPort: '', registered: false, lastBootstrapError: '',
+    bootstrapHost: '', bootstrapPort: '', initialized: false,
+    registered: false, bootstrapConnected: false, lastBootstrapError: '',
   });
+  const [infoLoaded, setInfoLoaded] = useState(false);
   const [peers, setPeers] = useState([]);
   const [groups, setGroups] = useState([]);
   const [activeChat, setActiveChat] = useState(null);   // { type:'peer'|'group'|'broadcast', id, name }
@@ -62,15 +64,19 @@ export default function App() {
 
   const refreshData = useCallback(async () => {
     try {
-      const [infoData, peersData, groupsData, transfersData] = await Promise.all([
-        fetchInfo(), fetchPeers(), fetchGroups(), getTransfers()
-      ]);
+      const infoData = await fetchInfo();
       setInfo(infoData);
+      setInfoLoaded(true);
+
+      const [peersData, groupsData, transfersData] = await Promise.all([
+        fetchPeers(), fetchGroups(), getTransfers()
+      ]);
       setPeers(peersData || []);
       setGroups(groupsData || []);
       setTransfers(transfersData || []);
     } catch (e) {
       console.error('Failed to refresh data:', e);
+      setInfoLoaded(true);
     }
   }, []);
 
@@ -255,6 +261,12 @@ export default function App() {
     return () => ws.close();
   }, [appendUniqueMessage, refreshData, showToast]);
 
+  useEffect(() => {
+    if (infoLoaded && !info.initialized) {
+      window.location.replace('http://localhost:9200');
+    }
+  }, [infoLoaded, info.initialized]);
+
   // ── Handlers ──────────────────────────────────────────────
   const handleSelectChat = useCallback((chat) => {
     setActiveChat(chat);
@@ -383,44 +395,7 @@ export default function App() {
     if (activeChat?.id === groupId) { setActiveChat(null); setMessages([]); }
   }, [activeChat]);
 
-  // ── Peer not initialized ──────────────────────────────────
-  if (!info.registered) {
-    return (
-      <div className="registration-shell">
-        <div className="registration-panel">
-          <div className="registration-badge">Peer inactive</div>
-          <h1>Mở peer từ launcher.</h1>
-          <p className="registration-subtitle">
-            Màn hình đăng ký trong peer UI đã bị tắt. Hãy quay lại launcher để mở
-            peer đã có hoặc tạo peer mới với đúng Tailscale IP/bootstrap.
-          </p>
-          <div className="registration-summary">
-            <div>
-              <span className="summary-label">Launcher</span>
-              <span className="summary-value host-value">localhost:9200</span>
-            </div>
-            <div>
-              <span className="summary-label">Web Port</span>
-              <span className="summary-value">{info.webPort || '-'}</span>
-            </div>
-            <div>
-              <span className="summary-label">Bootstrap Server</span>
-              <span className="summary-value">{info.bootstrapHost || '-'}:{info.bootstrapPort || '-'}</span>
-            </div>
-          </div>
-          <a className="registration-launcher-link" href="http://localhost:9200">
-            Open launcher
-          </a>
-          {info.lastBootstrapError && (
-            <div className="registration-note">
-              <strong>Error:</strong> {info.lastBootstrapError}
-            </div>
-          )}
-          {error && <div className="error-toast">{error}</div>}
-        </div>
-      </div>
-    );
-  }
+  if (!infoLoaded || !info.initialized) return null;
 
   // ── Chat UI ───────────────────────────────────────────────
   const activeChatGroup = activeChat?.type === 'group'

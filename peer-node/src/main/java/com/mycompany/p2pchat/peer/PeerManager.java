@@ -195,6 +195,14 @@ public class PeerManager {
         this.lastBootstrapError = error;
     }
 
+    public void markBootstrapTransientFailure(String error) {
+        this.lastBootstrapError = error;
+    }
+
+    public boolean hasLocalIdentity() {
+        return localUsername != null && !localUsername.isBlank() && localPort > 0;
+    }
+
     public void clearKnownPeers() {
         knownPeers.clear();
         loadKnownPeersFromDb();
