@@ -88,7 +88,9 @@ public class WebServer {
             info.put("mailboxHost", peerManager.getMailboxHost());
             info.put("mailboxPort", peerManager.getMailboxPort());
             info.put("address", peerManager.getLocalAddress());
+            info.put("initialized", peerManager.hasLocalIdentity());
             info.put("registered", peerManager.isRegisteredToBootstrap());
+            info.put("bootstrapConnected", peerManager.isRegisteredToBootstrap());
             info.put("lastBootstrapError", peerManager.getLastBootstrapError());
             ctx.contentType("application/json").result(gson.toJson(info));
         });
@@ -96,7 +98,9 @@ public class WebServer {
         app.get("/health", ctx -> {
             Map<String, Object> health = new HashMap<>();
             health.put("status", "UP");
+            health.put("initialized", peerManager.hasLocalIdentity());
             health.put("registered", peerManager.isRegisteredToBootstrap());
+            health.put("bootstrapConnected", peerManager.isRegisteredToBootstrap());
             health.put("username", peerManager.getLocalUsername());
             health.put("address", peerManager.getLocalAddress());
             health.put("mailbox", peerManager.getMailboxHost() + ":" + peerManager.getMailboxPort());
