@@ -9,6 +9,7 @@ import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -511,7 +512,8 @@ public class CoordinatorManager {
         String host = parts[0];
         int port = Integer.parseInt(parts[1]);
 
-        try (Socket socket = new Socket(host, port)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), Constants.COORDINATOR_TIMEOUT);
             socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             out.println(JsonUtil.toJson(msg));

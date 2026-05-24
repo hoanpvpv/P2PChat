@@ -15,6 +15,8 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -28,6 +30,11 @@ public class PeerClient {
     private final PeerManager peerManager;
     private final MailboxClient mailboxClient;
     private final E2EECrypto e2eeCrypto;
+    private final ExecutorService repairExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "group-repair");
+        t.setDaemon(true);
+        return t;
+    });
     private int consecutiveMailboxFailures = 0;
     private long mailboxCircuitOpenUntil = 0;
 
@@ -227,9 +234,11 @@ public class PeerClient {
         boolean allSent = true;
         String myAddress = peerManager.getLocalAddress();
         java.util.List<String> missedMemberUsernames = new java.util.ArrayList<>();
+        boolean needsRepair = false;
         for (String memberAddress : cache.getMembers()) {
             if (memberAddress.equals(myAddress)) continue;
-            String[] parts = memberAddress.split(":");
+            String targetAddress = resolveCurrentAddress(memberAddress);
+            String[] parts = targetAddress.split(":");
             if (parts.length != 2) continue;
             String memberHost = parts[0];
             int memberPort;
@@ -246,8 +255,12 @@ public class PeerClient {
                 if (memberUsername != null && !memberUsername.isBlank()) {
                     missedMemberUsernames.add(memberUsername);
                 }
-                peerManager.getLazyRepairManager().repair(groupId);
+                needsRepair = true;
             }
+        }
+
+        if (needsRepair && peerManager.getLazyRepairManager() != null) {
+            repairExecutor.submit(() -> peerManager.getLazyRepairManager().repair(groupId));
         }
 
         if (!missedMemberUsernames.isEmpty()) {
@@ -272,7 +285,20 @@ public class PeerClient {
         for (var p : peerManager.getAllKnownPeers()) {
             if (address.equals(p.getHost() + ":" + p.getPort())) return p.getUsername();
         }
+        for (var p : peerManager.getRecentPeersCache().getAll()) {
+            if (address.equals(p.address)) return p.username;
+        }
         return null;
+    }
+
+    private String resolveCurrentAddress(String cachedAddress) {
+        String username = resolveUsernameFromAddress(cachedAddress);
+        if (username == null || username.isBlank()) return cachedAddress;
+        PeerInfo current = peerManager.getPeer(username);
+        if (current != null && current.isOnline() && current.getHost() != null && current.getPort() > 0) {
+            return current.getAddress();
+        }
+        return cachedAddress;
     }
 
     // ==================== Coordinator Requests with Fallback ====================
@@ -323,7 +349,8 @@ public class PeerClient {
             }
             String[] parts = coord.split(":");
             if (parts.length != 2) continue;
-            try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
                 socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
                 BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -453,5 +480,7 @@ public class PeerClient {
         return Message.builder().type(MessageType.ERROR.name()).content(msg).build();
     }
 
-    public void shutdown() {}
+    public void shutdown() {
+        repairExecutor.shutdownNow();
+    }
 }

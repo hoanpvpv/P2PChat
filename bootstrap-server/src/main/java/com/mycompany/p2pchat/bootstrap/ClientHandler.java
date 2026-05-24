@@ -96,10 +96,7 @@ public class ClientHandler implements Runnable {
         if (keyParts.length > 2 && !keyParts[2].isBlank()) peerInfo.setPublicKey(keyParts[2]);
 
         boolean wasAlreadyKnown = registry.contains(peerInfo.getUsername());
-        if (wasAlreadyKnown) {
-            registry.unregister(peerInfo.getUsername());
-            bootstrapServer.getEventLog().warn("REGISTER_REPLACE", peerInfo.getUsername(), "Existing peer registration replaced");
-        }
+        if (wasAlreadyKnown) bootstrapServer.getEventLog().warn("REGISTER_REPLACE", peerInfo.getUsername(), "Existing peer registration replaced");
 
         registry.register(peerInfo);
         bootstrapServer.getEventLog().info("REGISTER", peerInfo.getUsername(), host + ":" + port);
@@ -117,6 +114,17 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleHeartbeat(Message message) {
+        if (!registry.contains(message.getSender())) {
+            bootstrapServer.getEventLog().warn("HEARTBEAT_UNKNOWN", message.getSender(), "Peer must register again");
+            send(Message.builder()
+                    .type(MessageType.REGISTER_NACK.name())
+                    .messageId(com.mycompany.p2pchat.protocol.ProtocolHandler.generateMessageId())
+                    .sender("bootstrap")
+                    .content("Peer is not registered")
+                    .timestamp(System.currentTimeMillis())
+                    .build());
+            return;
+        }
         registry.updateHeartbeat(message.getSender());
         bootstrapServer.getEventLog().info("HEARTBEAT", message.getSender(), "Heartbeat acknowledged");
         String peerList = registry.getPeerListJson();

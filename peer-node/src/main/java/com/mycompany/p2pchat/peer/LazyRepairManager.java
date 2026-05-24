@@ -9,6 +9,7 @@ import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.List;
 import java.util.logging.Logger;
@@ -103,7 +104,8 @@ public class LazyRepairManager {
         String[] parts = address.split(":");
         if (parts.length != 2) return null;
 
-        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
             socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));

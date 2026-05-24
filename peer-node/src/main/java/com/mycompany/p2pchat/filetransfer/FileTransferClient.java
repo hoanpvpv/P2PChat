@@ -175,7 +175,8 @@ public class FileTransferClient {
             throws IOException {
         String[] parts = sourceAddress.split(":");
         if (parts.length != 2) throw new IOException("Invalid address: " + sourceAddress);
-        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.ACK_TIMEOUT);
             socket.setSoTimeout(Constants.FILE_TRANSFER_TIMEOUT);
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
             DataInputStream  in  = new DataInputStream(new BufferedInputStream(socket.getInputStream()));

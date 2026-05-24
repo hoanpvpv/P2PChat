@@ -10,6 +10,7 @@ import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.*;
 import java.util.*;
@@ -174,7 +175,8 @@ public class FileTransferManager {
     }
 
     private void sendFileOffer(String host, int port, Message offer) throws IOException {
-        try (Socket socket = new Socket(host, port)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), Constants.ACK_TIMEOUT);
             socket.setSoTimeout(Constants.ACK_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             out.println(JsonUtil.toJson(offer));
@@ -326,7 +328,8 @@ public class FileTransferManager {
     // ── Helpers ───────────────────────────────────────────────
 
     private void sendSignal(String host, int port, String type, String transferId, int resumeFrom) throws IOException {
-        try (Socket socket = new Socket(host, port)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message msg = Message.builder()

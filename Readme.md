@@ -6,9 +6,33 @@ Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstra
 
 ## Hướng dẫn sử dụng nhanh
 
-### 1. Chuẩn bị
+### 1. Chuẩn bị mạng
 
 Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, dùng Tailscale để lấy IP riêng của từng máy.
+
+Cả hai máy phải nằm trong cùng Tailscale tailnet, hoặc máy host phải được share cho bạn bè:
+
+- Nếu tự test bằng nhiều thiết bị của bạn: đăng nhập cùng tài khoản Tailscale trên các thiết bị.
+- Nếu bạn bè dùng tài khoản riêng: mời email của bạn ấy vào tailnet tại `https://login.tailscale.com/admin/users`, hoặc share riêng máy host tại `https://login.tailscale.com/admin/machines`.
+- Sau khi tham gia Tailscale, mỗi người chạy `tailscale ip -4` để lấy IP máy của mình.
+
+Kiểm tra từ máy bạn bè tới máy host:
+
+```bash
+ping <IP_Tailscale_may_host>
+nc -vz <IP_Tailscale_may_host> 9000
+```
+
+Ví dụ:
+
+```bash
+ping 100.64.1.10
+nc -vz 100.64.1.10 9000
+```
+
+Nếu `nc` báo `succeeded` thì máy bạn bè kết nối được tới bootstrap.
+
+### 2. Build project
 
 Ví dụ:
 
@@ -23,7 +47,7 @@ Build image trên mỗi máy:
 ./run.sh build
 ```
 
-### 2. Máy host tạo mạng chat
+### 3. Máy host tạo mạng chat
 
 Trên máy sẽ chạy bootstrap + mailbox:
 
@@ -49,7 +73,7 @@ Web port: để trống
 
 Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
 
-### 3. Máy còn lại tham gia
+### 4. Máy còn lại tham gia
 
 Trên máy bạn bè:
 
@@ -83,7 +107,7 @@ Nếu đã từng tạo peer và lỡ tắt tab trình duyệt, chỉ cần ch�
 
 Mở `http://localhost:9200`, bấm `Open` ở phần `Continue` để vào lại đúng peer. Nếu container peer đang stopped, nút đó sẽ là `Start`.
 
-### 4. Chat
+### 5. Chat
 
 Trong Web UI, bấm refresh/discover nếu chưa thấy peer, chọn tên peer còn lại rồi nhắn tin.
 

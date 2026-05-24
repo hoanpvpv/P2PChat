@@ -15,14 +15,6 @@ export default function MessageInput({ onSend, onSendFile, disabled, activeChat 
 
   const handleChange = (e) => {
     setText(e.target.value);
-    if (!disabled && onTyping) {
-      if (!typingTimeoutRef.current) {
-        onTyping();
-        typingTimeoutRef.current = setTimeout(() => {
-          typingTimeoutRef.current = null;
-        }, 3000); // Send typing at most every 3s
-      }
-    }
   };
 
   const handleKeyDown = (e) => {

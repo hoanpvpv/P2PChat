@@ -48,8 +48,11 @@ ensure_bootstrap() {
         docker rm -f bootstrap 2>/dev/null || true
         ensure_network
         ensure_mailbox
+        mkdir -p "$(pwd)/data/bootstrap"
         docker run -d --name bootstrap --network $NETWORK \
-            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} $BOOTSTRAP_IMG \
+            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} \
+            -v "$(pwd)/data/bootstrap:/app/data" \
+            $BOOTSTRAP_IMG \
             --port $BOOTSTRAP_PORT --dashboard-port $DASHBOARD_PORT --mailbox mailbox:${MAILBOX_PORT} >/dev/null
         sleep 1
         echo "Bootstrap server started on port $BOOTSTRAP_PORT (Dashboard: $DASHBOARD_PORT)"
@@ -62,8 +65,11 @@ infra() {
     ensure_mailbox_public
     if ! docker ps --format '{{.Names}}' | grep -q '^bootstrap$'; then
         docker rm -f bootstrap 2>/dev/null || true
+        mkdir -p "$(pwd)/data/bootstrap"
         docker run -d --name bootstrap --network $NETWORK \
-            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} $BOOTSTRAP_IMG \
+            -p ${BOOTSTRAP_PORT}:${BOOTSTRAP_PORT} -p ${DASHBOARD_PORT}:${DASHBOARD_PORT} \
+            -v "$(pwd)/data/bootstrap:/app/data" \
+            $BOOTSTRAP_IMG \
             --port $BOOTSTRAP_PORT --dashboard-port $DASHBOARD_PORT --mailbox ${host_ip}:${MAILBOX_PORT} >/dev/null
         sleep 1
         echo "Bootstrap server started on port $BOOTSTRAP_PORT (Dashboard: $DASHBOARD_PORT)"

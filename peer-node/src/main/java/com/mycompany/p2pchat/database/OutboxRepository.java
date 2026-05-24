@@ -101,7 +101,8 @@ public class OutboxRepository {
     public List<OutboxEntry> dueForDeliveryRetry(int limit) {
         String sql = """
                 SELECT * FROM outbound_messages
-                WHERE state NOT IN ('DELIVERED', 'DEAD_LETTER') AND next_retry_at <= ?
+                WHERE state NOT IN ('DELIVERED', 'DEAD_LETTER', 'STORED_MAILBOX')
+                  AND next_retry_at <= ?
                 ORDER BY created_at ASC
                 LIMIT ?
                 """;

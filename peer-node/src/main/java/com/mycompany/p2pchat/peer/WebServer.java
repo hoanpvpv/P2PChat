@@ -14,6 +14,7 @@ import io.javalin.Javalin;
 import io.javalin.http.staticfiles.Location;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -180,9 +181,8 @@ public class WebServer {
 
         app.get("/api/auto-detect-host", ctx -> {
             Map<String, Object> result = new HashMap<>();
-            try (java.net.Socket s = new java.net.Socket(
-                    peerManager.getBootstrapHost(),
-                    peerManager.getBootstrapPort())) {
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 2000);
                 s.setSoTimeout(2000);
                 String localIp = s.getLocalAddress().getHostAddress();
                 result.put("host", localIp);
@@ -311,6 +311,7 @@ public class WebServer {
                 PeerInfo peer = peerManager.getPeer(uname);
                 if (peer != null && peer.isOnline()) {
                     memberAddresses.add(peer.getAddress());
+                    peerManager.getRecentPeersCache().upsert(uname, peer.getAddress());
                 }
             }
 
@@ -375,6 +376,7 @@ public class WebServer {
             if (entry == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Group not found"))); return; }
             PeerInfo peer = peerManager.getPeer(username);
             if (peer == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Peer not found"))); return; }
+            peerManager.getRecentPeersCache().upsert(username, peer.getAddress());
 
             Message addMsg = Message.builder()
                     .type(MessageType.GROUP_ADD.name())
@@ -456,8 +458,18 @@ public class WebServer {
             if (groupId.isEmpty() || content.isEmpty()) {
                 ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId or content"))); return;
             }
-            boolean sent = peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupId, content);
-            ctx.contentType("application/json").result(gson.toJson(Map.of("sent", sent)));
+            if (peerManager.getGroupCache().get(groupId) == null) {
+                ctx.status(404).result(gson.toJson(Map.of("error", "Group not found")));
+                return;
+            }
+            new Thread(() -> {
+                try {
+                    peerClient.sendGroupMessage(peerManager.getLocalUsername(), groupId, content);
+                } catch (Exception e) {
+                    logger.warning("Async group send failed: " + e.getMessage());
+                }
+            }, "group-send-" + groupId).start();
+            ctx.contentType("application/json").result(gson.toJson(Map.of("accepted", true)));
         });
 
         // ── Legacy group API (for backward compat) ──
@@ -555,7 +567,8 @@ public class WebServer {
     // ─────────────────── Helpers ───────────────────
 
     private void discoverPeers() {
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -577,7 +590,8 @@ public class WebServer {
     private void sendCoordInit(String address, GroupInfo info) {
         String[] parts = address.split(":");
         if (parts.length != 2) return;
-        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
             socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message initMsg = Message.builder()
@@ -596,7 +610,8 @@ public class WebServer {
     private void sendGroupJoined(String address, GroupInfo info, List<String> coords) {
         String[] parts = address.split(":");
         if (parts.length != 2) return;
-        try (Socket socket = new Socket(parts[0], Integer.parseInt(parts[1]))) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
             socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message joined = Message.builder()

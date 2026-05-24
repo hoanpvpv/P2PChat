@@ -250,35 +250,53 @@ export default function App() {
 
   const handleSend = useCallback(async (content) => {
     if (!activeChat || !content.trim()) return;
+    const tempId = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const timestamp = Date.now();
+    const optimisticMessage = {
+      messageId: tempId,
+      sender: info.username,
+      receiver: activeChat.type === 'peer' ? activeChat.name : undefined,
+      groupId: activeChat.type === 'group' ? activeChat.id : undefined,
+      groupName: activeChat.type === 'group' ? activeChat.name : undefined,
+      content,
+      timestamp,
+      type: activeChat.type === 'peer'
+        ? 'DIRECT_MESSAGE'
+        : activeChat.type === 'group'
+          ? 'GROUP_MESSAGE'
+          : 'BROADCAST',
+      deliveryState: activeChat.type === 'peer' ? 'PENDING_LOCAL' : undefined,
+    };
+    setMessages(prev => [...prev, optimisticMessage]);
+
     try {
       if (activeChat.type === 'peer') {
         const result = await sendMessage(activeChat.name, content);
-        setMessages(prev => [...prev, {
-          messageId: result.messageId,
-          sender: info.username,
-          receiver: activeChat.name,
-          content,
-          timestamp: result.timestamp || Date.now(),
-          type: 'DIRECT_MESSAGE',
-          deliveryState: result.status,
-        }]);
+        setMessages(prev => prev.map(msg => msg.messageId === tempId
+          ? {
+              ...msg,
+              messageId: result.messageId || tempId,
+              timestamp: result.timestamp || timestamp,
+              deliveryState: result.status || 'DELIVERED',
+            }
+          : msg));
       } else if (activeChat.type === 'group') {
-        await sendGroupMessage(activeChat.id, content);
-        setMessages(prev => [...prev, {
-          sender: info.username, groupId: activeChat.id,
-          groupName: activeChat.name, content, timestamp: Date.now(), type: 'GROUP_MESSAGE'
-        }]);
+        sendGroupMessage(activeChat.id, content).catch((e) => {
+          showToast('Group send is retrying/fallback: ' + e.message, 'warn');
+        });
       } else if (activeChat.type === 'broadcast') {
-        await sendBroadcast(content);
-        setMessages(prev => [...prev, {
-          sender: info.username, content, timestamp: Date.now(), type: 'BROADCAST'
-        }]);
+        sendBroadcast(content).catch((e) => {
+          showToast('Broadcast failed: ' + e.message, 'error');
+        });
       }
     } catch (e) {
+      setMessages(prev => prev.map(msg => msg.messageId === tempId
+        ? { ...msg, deliveryState: 'FAILED_RETRYABLE' }
+        : msg));
       setError('Send failed: ' + e.message);
       setTimeout(() => setError(''), 3000);
     }
-  }, [activeChat, info.username]);
+  }, [activeChat, info.username, showToast]);
 
   const handleSendFile = useCallback(async (file) => {
     if (!activeChat) return;

@@ -8,6 +8,7 @@ import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
@@ -154,7 +155,8 @@ public class PeerNode {
     }
 
     private boolean registerWithBootstrap() {
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(5000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -246,7 +248,8 @@ public class PeerNode {
     }
 
     private void sendHeartbeat() {
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -258,11 +261,22 @@ public class PeerNode {
             String line = in.readLine();
             if (line != null) {
                 Message resp = JsonUtil.fromJson(line.trim());
-                if ("HEARTBEAT_ACK".equals(resp.getType()) &&
-                    resp.getContent() != null && !resp.getContent().isEmpty()) {
-                    peerManager.parsePeerList(resp.getContent());
+                if ("REGISTER_NACK".equals(resp.getType())) {
+                    logger.warning("Bootstrap lost this peer registration; registering again");
+                    peerManager.markBootstrapRegistrationFailure("Bootstrap requested re-register");
+                    if (registerWithBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                        pullMailboxMessagesToWeb();
+                        lazyRepairManager.repairAllOnRestart();
+                    }
+                    return;
                 }
-                peerManager.markHeartbeatSuccess();  // may trigger Repair 4
+                if ("HEARTBEAT_ACK".equals(resp.getType())) {
+                    if (resp.getContent() != null) {
+                        peerManager.parsePeerList(resp.getContent());
+                    }
+                    peerManager.markHeartbeatSuccess();  // may trigger Repair 4
+                }
             }
         } catch (IOException e) {
             logger.fine("Heartbeat failed: " + e.getMessage());
@@ -339,7 +353,8 @@ public class PeerNode {
     }
 
     private void discoverCli() {
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -403,7 +418,8 @@ public class PeerNode {
 
     private void notifyBootstrapLeave() {
         if (!peerManager.isRegisteredToBootstrap()) return;
-        try (Socket socket = new Socket(peerManager.getBootstrapHost(), peerManager.getBootstrapPort())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 2000);
             socket.setSoTimeout(2000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             out.println(JsonUtil.toJson(ProtocolHandler.createPeerLeave(peerManager.getLocalUsername())));
