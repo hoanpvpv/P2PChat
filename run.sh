@@ -39,12 +39,17 @@ best_host_ip() {
                 ip=a[1];
                 if (ip ~ /^127\\./) next;
                 if (ip ~ /^169\\.254\\./) next;
-                if (ip ~ /^172\\.(1[7-9]|2[0-9]|3[0-1])\\./) next;
+                if (ip ~ /^172\\.(1[6-9]|2[0-9]|3[0-1])\\./) next;
                 print ip;
                 exit;
             }'
         return
     fi
+}
+
+is_docker_bridge_ip() {
+    local ip="$1"
+    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]]
 }
 
 docker_reserved_ports() {
@@ -283,7 +288,14 @@ join() {
         web_port=$(choose_web_port)
     fi
     if [ -z "$host_ip" ] || [ "$host_ip" = "auto" ]; then
-        host_ip=$(detect_host_for_bootstrap "$bootstrap_addr")
+        host_ip=$(best_host_ip)
+        if [ -z "$host_ip" ]; then
+            host_ip=$(detect_host_for_bootstrap "$bootstrap_addr")
+        fi
+        if is_docker_bridge_ip "$host_ip"; then
+            echo "Detected Docker bridge IP $host_ip; remote peers cannot reach it. Pass this machine's Tailscale IP instead."
+            exit 1
+        fi
     fi
     if [ -z "$mailbox_addr" ]; then
         local bootstrap_host="${bootstrap_addr%%:*}"
