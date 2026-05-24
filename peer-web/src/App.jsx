@@ -3,7 +3,7 @@ import {
   fetchInfo, fetchPeers, fetchGroups, fetchHistory, fetchGroupHistory, fetchBroadcastHistory,
   sendMessage, sendGroupMessage, sendBroadcast,
   createGroup, addToGroup, kickFromGroup, leaveGroup, disbandGroup,
-  discoverPeers, connectWebSocket, autoDetectHost, initPeer,
+  discoverPeers, connectWebSocket,
   getTransfers, offerFile, acceptFile, fetchOutbox
 } from './api';
 import Sidebar from './components/Sidebar';
@@ -25,12 +25,6 @@ export default function App() {
   const [typingUsers, setTypingUsers] = useState({}); // { sender: timeoutId }
   const [error, setError] = useState('');
   const [toast, setToast] = useState(null);             // { message, variant: 'info'|'warn'|'error' }
-  const [initing, setIniting] = useState(false);
-  const [setupForm, setSetupForm] = useState({
-    username: '',
-    peerPort: '',
-  });
-  const [detectedHost, setDetectedHost] = useState('');
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const activeChatRef = useRef(activeChat);
@@ -72,10 +66,6 @@ export default function App() {
         fetchInfo(), fetchPeers(), fetchGroups(), getTransfers()
       ]);
       setInfo(infoData);
-      setSetupForm((prev) => ({
-        username: prev.username || infoData.username || '',
-        peerPort: prev.peerPort || String(infoData.peerPort || ''),
-      }));
       setPeers(peersData || []);
       setGroups(groupsData || []);
       setTransfers(transfersData || []);
@@ -119,10 +109,6 @@ export default function App() {
 
   // ── WebSocket ──────────────────────────────────────────────
   useEffect(() => {
-    autoDetectHost()
-      .then((data) => setDetectedHost(data.host || 'localhost'))
-      .catch(() => setDetectedHost('localhost'));
-
     refreshData();
     const ws = connectWebSocket((event) => {
       const { type, data } = event;
@@ -397,42 +383,21 @@ export default function App() {
     if (activeChat?.id === groupId) { setActiveChat(null); setMessages([]); }
   }, [activeChat]);
 
-  const handleSetupChange = useCallback((event) => {
-    const { name, value } = event.target;
-    setSetupForm((prev) => ({ ...prev, [name]: value }));
-  }, []);
-
-  const handleSetup = useCallback(async (event) => {
-    event.preventDefault();
-    setIniting(true);
-    setError('');
-    try {
-      await initPeer(setupForm.username.trim(), Number(setupForm.peerPort));
-      await refreshData();
-    } catch (e) {
-      setError(e.message || 'Failed to initialize peer');
-      setTimeout(() => setError(''), 4000);
-    } finally {
-      setIniting(false);
-    }
-  }, [refreshData, setupForm.username, setupForm.peerPort]);
-
-  // ── Registration screen ───────────────────────────────────
+  // ── Peer not initialized ──────────────────────────────────
   if (!info.registered) {
     return (
       <div className="registration-shell">
         <div className="registration-panel">
-          <div className="registration-badge">Peer Setup</div>
-          <h1>Configure your peer node.</h1>
+          <div className="registration-badge">Peer inactive</div>
+          <h1>Mở peer từ launcher.</h1>
           <p className="registration-subtitle">
-            Enter a username and choose a port for this peer. Your local IP will be
-            detected automatically. Once started, this peer will connect to the
-            bootstrap server on the default port.
+            Màn hình đăng ký trong peer UI đã bị tắt. Hãy quay lại launcher để mở
+            peer đã có hoặc tạo peer mới với đúng Tailscale IP/bootstrap.
           </p>
           <div className="registration-summary">
             <div>
-              <span className="summary-label">Detected Host</span>
-              <span className="summary-value host-value">{detectedHost || 'detecting...'}</span>
+              <span className="summary-label">Launcher</span>
+              <span className="summary-value host-value">localhost:9200</span>
             </div>
             <div>
               <span className="summary-label">Web Port</span>
@@ -440,48 +405,12 @@ export default function App() {
             </div>
             <div>
               <span className="summary-label">Bootstrap Server</span>
-              <span className="summary-value">localhost:{info.bootstrapPort || 8080}</span>
+              <span className="summary-value">{info.bootstrapHost || '-'}:{info.bootstrapPort || '-'}</span>
             </div>
           </div>
-
-          <form className="registration-form" onSubmit={handleSetup}>
-            <label>
-              <span>Username <span className="required">*</span></span>
-              <input
-                name="username"
-                value={setupForm.username}
-                onChange={handleSetupChange}
-                placeholder="e.g. alice"
-                required
-                autoFocus
-              />
-            </label>
-            <label>
-              <span>Peer Port <span className="required">*</span></span>
-              <input
-                name="peerPort"
-                type="number"
-                min="1024"
-                max="65535"
-                value={setupForm.peerPort}
-                onChange={handleSetupChange}
-                placeholder="5001"
-                required
-              />
-            </label>
-            <label>
-              <span>Host (auto-detected)</span>
-              <input
-                type="text"
-                value={detectedHost || ''}
-                readOnly
-                className="input-readonly"
-              />
-            </label>
-            <button type="submit" disabled={initing}>
-              {initing ? 'Starting...' : 'Start Peer'}
-            </button>
-          </form>
+          <a className="registration-launcher-link" href="http://localhost:9200">
+            Open launcher
+          </a>
           {info.lastBootstrapError && (
             <div className="registration-note">
               <strong>Error:</strong> {info.lastBootstrapError}

@@ -164,7 +164,15 @@ def is_docker_bridge_ip(addr):
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
-    return ip.version == 4 and ipaddress.ip_network("172.16.0.0/12").supernet_of(ipaddress.ip_network(f"{addr}/32"))
+    return ip.version == 4 and ip in ipaddress.ip_network("172.16.0.0/12")
+
+
+def is_tailscale_ip(addr):
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return ip.version == 4 and ip in TAILSCALE_NET
 
 
 def pick_best_local_ip():
@@ -279,6 +287,8 @@ def validate_advertised_host(host):
             raise ValueError("IP máy này không được là localhost/0.0.0.0. Nếu test local, hãy để trống ô IP máy này.")
         if is_docker_bridge_ip(host):
             raise ValueError("IP máy này không được là IP Docker 172.16.0.0/12. Hãy dùng Tailscale IP 100.x hoặc để trống để tự detect.")
+        if is_tailscale_ip(host):
+            return
         resolved = {str(parsed)}
     except ValueError as exc:
         if "localhost/0.0.0.0" in str(exc):
@@ -290,6 +300,8 @@ def validate_advertised_host(host):
 
     local_addresses = local_ipv4_addresses()
     if not resolved.intersection(local_addresses):
+        if any(is_tailscale_ip(addr) for addr in resolved):
+            return
         known = ", ".join(sorted(local_addresses)) or "không phát hiện được IP local"
         raise ValueError(
             "IP máy này phải là IP thật của máy đang chạy launcher. "

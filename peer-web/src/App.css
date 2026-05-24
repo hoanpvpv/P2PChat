@@ -148,6 +148,19 @@ body {
   cursor: wait;
 }
 
+.registration-launcher-link {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 14px 18px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #e94560 0%, #ff7b54 100%);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
 .registration-note {
   margin-top: 18px;
   padding: 14px 16px;

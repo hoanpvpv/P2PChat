@@ -195,29 +195,8 @@ public class WebServer {
         });
 
         app.post("/api/init", ctx -> {
-            Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
-            String username = body.get("username") != null ? body.get("username").toString().trim() : "";
-            Number peerPortValue = body.get("peerPort") instanceof Number ? (Number) body.get("peerPort") : null;
-            int peerPort = peerPortValue != null ? peerPortValue.intValue() : 0;
-
-            if (username.isEmpty()) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Missing username")));
-                return;
-            }
-            if (peerPort <= 0 || peerPort > 65535) {
-                ctx.status(400).result(gson.toJson(Map.of("error", "Invalid peer port")));
-                return;
-            }
-
-            peerNode.initPeer(peerPort, username);
-
-            Map<String, Object> response = new HashMap<>();
-            response.put("initialized", true);
-            response.put("username", peerManager.getLocalUsername());
-            response.put("peerPort", peerManager.getLocalPort());
-            response.put("registered", peerManager.isRegisteredToBootstrap());
-            response.put("lastBootstrapError", peerManager.getLastBootstrapError());
-            ctx.contentType("application/json").result(gson.toJson(response));
+            ctx.status(410).contentType("application/json").result(gson.toJson(Map.of(
+                    "error", "Peer setup from this Web UI is disabled. Use the launcher on http://localhost:9200.")));
         });
 
         app.post("/api/broadcast", ctx -> {
