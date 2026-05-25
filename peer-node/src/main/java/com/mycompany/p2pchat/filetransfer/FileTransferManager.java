@@ -75,7 +75,7 @@ public class FileTransferManager {
         var peer = peerManager.getPeer(receiverUsername);
         if (peer == null) throw new IOException("Peer not found: " + receiverUsername);
 
-        FileTransferMeta meta = buildMeta(filePath, peer.getAddress(), null);
+        FileTransferMeta meta = buildMeta(filePath, receiverUsername, null);
         repository.saveTransfer(meta);
         fileServer.registerTransfer(meta, filePath);
         pendingOffers.put(meta.transferId, meta);
@@ -104,13 +104,13 @@ public class FileTransferManager {
         Message offer = buildOfferMessage(meta, null);
         peerManager.getMessageRepository().saveMessage(offer);
 
-        String myAddr = peerManager.getLocalAddress();
-        for (String addr : cache.getMembers()) {
-            if (addr.equals(myAddr)) continue;
-            String[] parts = addr.split(":");
-            if (parts.length == 2) {
-                try { sendFileOffer(parts[0], Integer.parseInt(parts[1]), offer); } catch (Exception e) {
-                    logger.fine("Failed to offer file to " + addr + ": " + e.getMessage());
+        String myUname = peerManager.getLocalUsername();
+        for (String uname : cache.getMembers()) {
+            if (uname.equals(myUname)) continue;
+            var peer = peerManager.getPeer(uname);
+            if (peer != null) {
+                try { sendFileOffer(peer.getHost(), peer.getPort(), offer); } catch (Exception e) {
+                    logger.fine("Failed to offer file to " + uname + ": " + e.getMessage());
                 }
             }
         }
@@ -131,7 +131,7 @@ public class FileTransferManager {
         meta.filename   = filePath.getFileName().toString();
         meta.fileSize   = fileSize;
         meta.sha256     = sha256;
-        meta.sender     = peerManager.getLocalAddress();
+        meta.sender     = peerManager.getLocalUsername();
         meta.receiver   = receiver;
         meta.groupId    = groupId;
         meta.totalChunks = totalChunks;
@@ -196,7 +196,7 @@ public class FileTransferManager {
         meta.fileSize    = msg.getFileSize();
         meta.sha256      = msg.getSha256();
         meta.sender      = msg.getSender();
-        meta.receiver    = peerManager.getLocalAddress();
+        meta.receiver    = peerManager.getLocalUsername();
         meta.groupId     = msg.getGroupId();
         meta.totalChunks = msg.getTotalChunks();
         meta.filePort    = msg.getFilePort();
@@ -335,7 +335,7 @@ public class FileTransferManager {
             Message msg = Message.builder()
                     .type(type)
                     .messageId(ProtocolHandler.generateMessageId())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .transferId(transferId)
                     .resumeChunkIndex(resumeFrom)
                     .timestamp(System.currentTimeMillis())
