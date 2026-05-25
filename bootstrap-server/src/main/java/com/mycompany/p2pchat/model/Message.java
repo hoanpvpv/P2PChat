@@ -8,6 +8,9 @@ public class Message {
     private String groupName;
     private String content;
     private long timestamp;
+    private String encryptionAlgorithm;
+    private String senderKeyId;
+    private String receiverKeyId;
 
     public Message() {
         this.timestamp = System.currentTimeMillis();
@@ -38,6 +41,15 @@ public class Message {
     public long getTimestamp() { return timestamp; }
     public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
 
+    public String getEncryptionAlgorithm() { return encryptionAlgorithm; }
+    public void setEncryptionAlgorithm(String encryptionAlgorithm) { this.encryptionAlgorithm = encryptionAlgorithm; }
+
+    public String getSenderKeyId() { return senderKeyId; }
+    public void setSenderKeyId(String senderKeyId) { this.senderKeyId = senderKeyId; }
+
+    public String getReceiverKeyId() { return receiverKeyId; }
+    public void setReceiverKeyId(String receiverKeyId) { this.receiverKeyId = receiverKeyId; }
+
     public static class Builder {
         private final Message message = new Message();
 
@@ -48,6 +60,9 @@ public class Message {
         public Builder groupName(String groupName) { message.setGroupName(groupName); return this; }
         public Builder content(String content) { message.setContent(content); return this; }
         public Builder timestamp(long timestamp) { message.setTimestamp(timestamp); return this; }
+        public Builder encryptionAlgorithm(String a) { message.setEncryptionAlgorithm(a); return this; }
+        public Builder senderKeyId(String id) { message.setSenderKeyId(id); return this; }
+        public Builder receiverKeyId(String id) { message.setReceiverKeyId(id); return this; }
         public Message build() { return message; }
     }
 

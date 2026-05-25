@@ -1,137 +1,308 @@
 package com.mycompany.p2pchat.peer;
 
-import com.mycompany.p2pchat.database.MessageRepository;
 import com.mycompany.p2pchat.model.Message;
 import com.mycompany.p2pchat.model.PeerInfo;
 import com.mycompany.p2pchat.protocol.JsonUtil;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
+import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.logging.Logger;
 
 public class PeerNode {
 
     private static final Logger logger = LoggerUtil.getLogger(PeerNode.class.getName());
-    private final String username;
-    private final String host;
-    private final int port;
-    private final String bootstrapHost;
-    private final int bootstrapPort;
+    private int port;
     private final int webPort;
-    private final PeerManager peerManager;
-    private final PeerServer peerServer;
+    private PeerManager peerManager;
+    private PeerServer peerServer;
     private final PeerClient peerClient;
-    private final WebServer webServer;
+    private WebServer webServer;
+    private CoordinatorManager coordinatorManager;
+    private LazyRepairManager lazyRepairManager;
+    private final E2EECrypto e2eeCrypto;
     private volatile boolean running = false;
+    private volatile boolean heartbeatStarted = false;
+    private volatile boolean mailboxRetryStarted = false;
 
-    public PeerNode(String username, String host, int port, String bootstrapHost, int bootstrapPort, int webPort) {
-        this.username = username;
-        this.host = host;
-        this.port = port;
-        this.bootstrapHost = bootstrapHost;
-        this.bootstrapPort = bootstrapPort;
+    public PeerNode(int webPort) {
+        this.port = com.mycompany.p2pchat.utils.Constants.DEFAULT_PEER_PORT;
         this.webPort = webPort;
 
-        this.peerManager = new PeerManager(username);
-        this.peerManager.setBootstrapHost(bootstrapHost);
-        this.peerManager.setBootstrapPort(bootstrapPort);
-        this.peerManager.setLocalUsername(username);
+        this.peerManager = new PeerManager("peer-" + this.port);
+        this.peerManager.setBootstrapHost("localhost");
+        this.peerManager.setBootstrapPort(Constants.DEFAULT_BOOTSTRAP_PORT);
+        this.peerManager.setLocalHost("localhost");
+        this.peerManager.setLocalPort(this.port);
+        this.peerManager.setWebPort(this.webPort);
+        this.peerManager.setLocalUsername("");
+        this.peerManager.markBootstrapRegistrationFailure("Peer has not been connected to a bootstrap server yet");
+        this.e2eeCrypto = E2EECrypto.loadOrCreate();
+        this.peerManager.setLocalPublicKey(e2eeCrypto.publicKeyBase64());
+        this.peerManager.setLocalKeyId(e2eeCrypto.keyId());
 
-        this.peerServer = new PeerServer(port, peerManager, username);
+        // We defer starting CoordinatorManager and LazyRepairManager until initPeer()
+        // But we can initialize them with a dummy address for now to avoid nulls
+        this.coordinatorManager = new CoordinatorManager(this.peerManager.getLocalUsername(), peerManager);
+        this.peerManager.setCoordinatorManager(this.coordinatorManager);
+        this.lazyRepairManager = new LazyRepairManager(peerManager, this.peerManager.getLocalUsername());
+        this.peerManager.setLazyRepairManager(lazyRepairManager);
+
+        this.peerServer = null;
         this.peerClient = new PeerClient(peerManager);
-        this.webServer = new WebServer(webPort, peerManager, username, peerClient);
-        this.peerServer.setWebServer(webServer);
+        this.webServer = new WebServer(webPort, peerManager, peerClient, this);
+        // Wire cross-references
+        this.webServer.setCoordinatorManager(coordinatorManager);
+        this.coordinatorManager.setWebServer(webServer);
+        this.peerManager.getFileTransferManager().setWebServer(webServer);
+    }
+
+    public void setConfig(String username, String host, int peerPort, String bootstrap) {
+        if (username != null && !username.isEmpty()) this.peerManager.setLocalUsername(username);
+        if (host != null && !host.isEmpty()) this.peerManager.setLocalHost(host);
+        if (peerPort > 0) {
+            this.port = peerPort;
+            this.peerManager.setLocalPort(peerPort);
+        }
+        if (bootstrap != null && !bootstrap.isEmpty()) {
+            String[] parts = bootstrap.split(":");
+            this.peerManager.setBootstrapHost(parts[0]);
+            if (parts.length > 1) {
+                this.peerManager.setBootstrapPort(Integer.parseInt(parts[1]));
+            }
+        }
+    }
+
+    public void setMailboxConfig(String mailbox) {
+        if (mailbox == null || mailbox.isEmpty()) return;
+        String[] parts = mailbox.split(":");
+        peerManager.setMailboxHost(parts[0]);
+        if (parts.length > 1) {
+            peerManager.setMailboxPort(Integer.parseInt(parts[1]));
+        }
     }
 
     public void start() {
         running = true;
-        peerServer.start();
         webServer.start();
+        coordinatorManager.start();
+        startMailboxRetryWorker();
 
-        boolean registered = registerWithBootstrap();
-        if (!registered) {
-            System.out.println("[WARN] Could not register with bootstrap server. Running in standalone mode.");
+        if (peerManager.getLocalUsername() != null && !peerManager.getLocalUsername().isBlank()
+                && peerManager.getLocalPort() > 0) {
+            initPeer(peerManager.getLocalPort(), peerManager.getLocalUsername());
         }
 
-        startHeartbeat();
-
-        System.out.println("=== P2PChat - " + username + " ===");
-        System.out.println("Peer server listening on port " + port);
+        System.out.println("=== P2PChat Peer ===");
         System.out.println("Web UI: http://localhost:" + webPort);
-        System.out.println("Bootstrap server: " + bootstrapHost + ":" + bootstrapPort);
-        System.out.println("Type /help for available commands.\n");
+        System.out.println("Open the web UI to set up your peer.");
+        System.out.println("Type /help for available commands after connecting.\n");
 
         startCli();
     }
 
+    public synchronized void initPeer(int peerPort, String username) {
+        this.port = peerPort;
+        this.peerManager.setLocalPort(peerPort);
+        this.peerManager.setLocalUsername(username);
+        this.peerManager.clearKnownPeers();
+        
+        String myAddress = username;
+
+        if (this.peerServer != null) {
+            this.peerServer.stop();
+        }
+        
+        if (this.coordinatorManager != null) {
+            this.coordinatorManager.stop();
+        }
+
+        this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
+        this.coordinatorManager.setWebServer(webServer);
+        this.peerManager.setCoordinatorManager(this.coordinatorManager);
+        this.coordinatorManager.start();
+
+        this.lazyRepairManager = new LazyRepairManager(peerManager, myAddress);
+        this.peerManager.setLazyRepairManager(lazyRepairManager);
+
+        this.peerServer = new PeerServer(peerPort, peerManager);
+        this.peerServer.setWebServer(webServer);
+        this.peerServer.setCoordinatorManager(this.coordinatorManager);
+        this.peerServer.setPeerClient(peerClient);
+        this.peerManager.setPeerServer(this.peerServer);
+        this.peerServer.start();
+        peerManager.getFileTransferManager().restartForCurrentPeerPort();
+
+        this.webServer.setCoordinatorManager(this.coordinatorManager);
+        peerManager.setLocalUsername(username);
+        peerManager.clearKnownPeers();
+
+        boolean registered = registerWithBootstrap();
+        if (registered && !heartbeatStarted) {
+            peerClient.resolveMailboxFromBootstrap();
+            pullMailboxMessagesToWeb();
+            startHeartbeat();
+            // Trigger Repair 3: restart — resync all cached groups
+            lazyRepairManager.repairAllOnRestart();
+        }
+    }
+
     private boolean registerWithBootstrap() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(5000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            Message registerMsg = ProtocolHandler.createRegister(username, host, port);
-            out.println(JsonUtil.toJson(registerMsg));
+            Message reg = ProtocolHandler.createRegister(
+                    peerManager.getLocalUsername(), peerManager.getLocalHost(), port,
+                    peerManager.getLocalKeyId(), peerManager.getLocalPublicKey());
+            out.println(JsonUtil.toJson(reg));
             out.flush();
 
-            String responseLine = in.readLine();
-            if (responseLine != null) {
-                Message response = JsonUtil.fromJson(responseLine.trim());
-                if ("REGISTER_ACK".equals(response.getType())) {
-                    peerManager.parsePeerList(response.getContent());
-                    System.out.println("[BOOTSTRAP] Registered. Online peers: " +
+            String line = in.readLine();
+            if (line != null) {
+                Message resp = JsonUtil.fromJson(line.trim());
+                if ("REGISTER_ACK".equals(resp.getType())) {
+                    peerManager.parsePeerList(resp.getContent());
+                    peerManager.markBootstrapRegistrationSuccess();
+                    System.out.println("[BOOTSTRAP] Registered. Peers: " +
                             peerManager.getOnlinePeers().stream().map(PeerInfo::getUsername).toList());
                     return true;
                 }
             }
         } catch (IOException e) {
-            logger.severe("Failed to register with bootstrap: " + e.getMessage());
+            peerManager.markBootstrapRegistrationFailure("Connection error: " + e.getMessage());
+            logger.severe("Registration failed: " + e.getMessage());
+            return false;
         }
+        peerManager.markBootstrapRegistrationFailure("Bootstrap rejected registration (invalid response)");
         return false;
     }
 
     private void startHeartbeat() {
-        Thread heartbeatThread = new Thread(() -> {
+        heartbeatStarted = true;
+        Thread hb = new Thread(() -> {
             while (running) {
                 try {
-                    Thread.sleep(com.mycompany.p2pchat.utils.Constants.HEARTBEAT_INTERVAL);
-                    sendHeartbeat();
-                } catch (InterruptedException e) {
-                    break;
-                }
+                    Thread.sleep(Constants.HEARTBEAT_INTERVAL);
+                    if (!peerManager.hasLocalIdentity()) continue;
+                    if (peerManager.isRegisteredToBootstrap()) {
+                        sendHeartbeat();
+                    } else if (registerWithBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                        pullMailboxMessagesToWeb();
+                        lazyRepairManager.repairAllOnRestart();
+                    }
+                } catch (InterruptedException e) { break; }
             }
         }, "heartbeat-thread");
-        heartbeatThread.setDaemon(true);
-        heartbeatThread.start();
+        hb.setDaemon(true);
+        hb.start();
+    }
+
+    private void startMailboxRetryWorker() {
+        if (mailboxRetryStarted) return;
+        mailboxRetryStarted = true;
+        Thread retry = new Thread(() -> {
+            int tick = 0;
+            while (running) {
+                try {
+                    Thread.sleep(5000);
+                    tick++;
+                    // Re-resolve mailbox endpoint every ~30s so peers recover if the
+                    // bootstrap-advertised endpoint changes (e.g. infra reconfigured,
+                    // or a remote peer was given a Docker-DNS-only address and the
+                    // bootstrap later started advertising a host-reachable IP).
+                    if (tick % 6 == 0 && peerManager.isRegisteredToBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                    }
+                    peerClient.retryMailboxOutbox();
+                    peerClient.retryOutboxDelivery();
+                    peerManager.getOutboxRepository().cleanupDeliveredOlderThan(
+                            System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);
+                    if (peerManager.hasLocalIdentity()) {
+                        pullMailboxMessagesToWeb();
+                        // Promote STORED_MAILBOX → DELIVERED for messages the receiver
+                        // has now pulled, so the sender UI stops showing them as pending.
+                        peerClient.pollMailboxDeliveries();
+                    }
+                } catch (InterruptedException e) {
+                    break;
+                } catch (Exception e) {
+                    logger.fine("Mailbox retry worker error: " + e.getMessage());
+                }
+            }
+        }, "mailbox-retry-thread");
+        retry.setDaemon(true);
+        retry.start();
+    }
+
+    private void pullMailboxMessagesToWeb() {
+        for (Message message : peerClient.pullMailboxMessages()) {
+            if (peerServer != null) {
+                peerServer.processMessage(message, null);
+            }
+        }
+    }
+
+    private Map<String, Object> messageToMap(Message msg) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("messageId", msg.getMessageId());
+        map.put("sender", msg.getSender());
+        map.put("receiver", msg.getReceiver());
+        map.put("groupName", msg.getGroupName());
+        map.put("groupId", msg.getGroupId());
+        map.put("content", msg.getContent());
+        map.put("type", msg.getType());
+        map.put("timestamp", msg.getTimestamp());
+        return map;
     }
 
     private void sendHeartbeat() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            Message heartbeat = ProtocolHandler.createHeartbeat(username);
-            out.println(JsonUtil.toJson(heartbeat));
+            Message hb = ProtocolHandler.createHeartbeat(peerManager.getLocalUsername());
+            out.println(JsonUtil.toJson(hb));
             out.flush();
 
             String line = in.readLine();
             if (line != null) {
-                Message response = JsonUtil.fromJson(line.trim());
-                if ("HEARTBEAT_ACK".equals(response.getType()) && response.getContent() != null && !response.getContent().isEmpty()) {
-                    peerManager.parsePeerList(response.getContent());
+                Message resp = JsonUtil.fromJson(line.trim());
+                if ("REGISTER_NACK".equals(resp.getType())) {
+                    logger.warning("Bootstrap lost this peer registration; registering again");
+                    peerManager.markBootstrapRegistrationFailure("Bootstrap requested re-register");
+                    if (registerWithBootstrap()) {
+                        peerClient.resolveMailboxFromBootstrap();
+                        pullMailboxMessagesToWeb();
+                        lazyRepairManager.repairAllOnRestart();
+                    }
+                    return;
+                }
+                if ("HEARTBEAT_ACK".equals(resp.getType())) {
+                    if (resp.getContent() != null) {
+                        peerManager.parsePeerList(resp.getContent());
+                    }
+                    peerManager.markHeartbeatSuccess();  // may trigger Repair 4
                 }
             }
         } catch (IOException e) {
             logger.fine("Heartbeat failed: " + e.getMessage());
+            peerManager.markBootstrapTransientFailure(e.getMessage());
         }
     }
+
+    // ─────────────── CLI ───────────────
 
     private void startCli() {
         Scanner scanner = new Scanner(System.in);
@@ -139,24 +310,14 @@ public class PeerNode {
             System.out.print("> ");
             if (!scanner.hasNextLine()) break;
             String input = scanner.nextLine().trim();
-            if (input.isEmpty()) continue;
-            processCommand(input);
+            if (!input.isEmpty()) processCommand(input);
         }
-        scanner.close();
     }
 
     private void processCommand(String input) {
-        if (input.startsWith("/")) {
-            handleSlashCommand(input);
-        } else {
-            System.out.println("Unknown command. Type /help for available commands.");
-        }
-    }
-
-    private void handleSlashCommand(String input) {
+        if (!input.startsWith("/")) { System.out.println("Unknown command. Type /help."); return; }
         String[] parts = input.split("\\s+", 2);
         String cmd = parts[0].toLowerCase();
-
         switch (cmd) {
             case "/help":
                 printHelp();
@@ -165,31 +326,19 @@ public class PeerNode {
                 listPeers();
                 break;
             case "/discover":
-                discoverPeers();
+                if (requireReg()) discoverCli();
                 break;
             case "/msg":
-                if (parts.length < 2) {
-                    System.out.println("Usage: /msg <peer> <message>");
-                    break;
-                }
-                sendDirectMsg(parts[1]);
+                if (requireReg() && parts.length > 1) sendDirectCli(parts[1]);
                 break;
             case "/group":
-                handleGroupCommand(parts.length > 1 ? parts[1] : "");
+                if (requireReg()) handleGroupCli(parts.length > 1 ? parts[1] : "");
                 break;
             case "/broadcast":
-                if (parts.length < 2) {
-                    System.out.println("Usage: /broadcast <message>");
-                    break;
-                }
-                peerClient.sendBroadcast(username, parts[1]);
+                if (requireReg() && parts.length > 1) peerClient.sendBroadcast(peerManager.getLocalUsername(), parts[1]);
                 break;
             case "/history":
-                if (parts.length < 2) {
-                    System.out.println("Usage: /history <peer>");
-                    break;
-                }
-                showHistory(parts[1].trim());
+                if (parts.length > 1) showHistory(parts[1].trim());
                 break;
             case "/exit":
                 shutdown();
@@ -200,134 +349,111 @@ public class PeerNode {
     }
 
     private void printHelp() {
-        System.out.println("=== Available Commands ===");
-        System.out.println("  /help                     - Show this help");
-        System.out.println("  /peers                    - List online peers");
-        System.out.println("  /discover                 - Refresh peer list from bootstrap");
-        System.out.println("  /msg <peer> <message>     - Send direct message");
-        System.out.println("  /broadcast <message>      - Send to all peers");
-        System.out.println("  /group create <name>      - Create group");
-        System.out.println("  /group add <name> <peer>  - Add peer to group");
-        System.out.println("  /group list               - List groups");
-        System.out.println("  /group msg <name> <msg>   - Send group message");
-        System.out.println("  /history <peer>           - Show chat history");
-        System.out.println("  /exit                     - Exit");
+        System.out.println("""
+=== P2PChat Commands ===
+  /help                          - This help
+  /peers                         - List online peers
+  /discover                      - Refresh peer list
+  /msg <peer> <message>          - Send direct message
+  /broadcast <message>           - Broadcast to all
+  /group create <name> [members] - Create group
+  /group list                    - List groups
+  /group msg <groupId> <msg>     - Send group message
+  /history <peer>                - Chat history
+  /exit                          - Exit""");
     }
 
     private void listPeers() {
         var peers = peerManager.getOnlinePeers();
-        if (peers.isEmpty()) {
-            System.out.println("No peers online.");
-            return;
-        }
+        if (peers.isEmpty()) { System.out.println("No peers online."); return; }
         System.out.println("=== Online Peers ===");
-        for (PeerInfo p : peers) {
-            System.out.println("  " + p);
-        }
+        peers.forEach(p -> System.out.println("  " + p));
     }
 
-    private void discoverPeers() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+    private void discoverCli() {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 3000);
             socket.setSoTimeout(3000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-            Message discover = ProtocolHandler.createDiscover(username);
+            Message discover = ProtocolHandler.createDiscover(peerManager.getLocalUsername());
             out.println(JsonUtil.toJson(discover));
             out.flush();
-
             String line = in.readLine();
             if (line != null) {
-                Message response = JsonUtil.fromJson(line.trim());
-                if ("PEER_LIST".equals(response.getType())) {
-                    peerManager.parsePeerList(response.getContent());
-                    System.out.println("[DISCOVER] Updated peer list:");
+                Message resp = JsonUtil.fromJson(line.trim());
+                if ("PEER_LIST".equals(resp.getType())) {
+                    peerManager.parsePeerList(resp.getContent());
                     listPeers();
                 }
             }
         } catch (IOException e) {
-            System.out.println("[ERROR] Discovery failed: " + e.getMessage());
+            System.out.println("[ERROR] Discover failed: " + e.getMessage());
         }
     }
 
-    private void sendDirectMsg(String args) {
+    private void sendDirectCli(String args) {
         String[] parts = args.split("\\s+", 2);
-        if (parts.length < 2) {
-            System.out.println("Usage: /msg <peer> <message>");
-            return;
-        }
-        String receiver = parts[0];
-        String content = parts[1];
-        boolean sent = peerClient.sendDirectMessage(username, receiver, content);
-        if (sent) {
-            System.out.println("[SENT] -> " + receiver + ": " + content);
-        }
+        if (parts.length < 2) { System.out.println("Usage: /msg <peer> <message>"); return; }
+        peerClient.sendDirectMessage(peerManager.getLocalUsername(), parts[0], parts[1]);
     }
 
-    private void handleGroupCommand(String args) {
-        String[] parts = args.split("\\s+");
-        if (parts.length < 1) {
-            System.out.println("Usage: /group <create|add|list|msg> ...");
-            return;
-        }
-        String subCmd = parts[0].toLowerCase();
-        switch (subCmd) {
-            case "create":
+    private void handleGroupCli(String args) {
+        String[] parts = args.split("\\s+", 3);
+        if (parts.length < 1) { System.out.println("Usage: /group <create|list|msg> ..."); return; }
+        switch (parts[0].toLowerCase()) {
+            case "create" -> {
                 if (parts.length < 2) { System.out.println("Usage: /group create <name>"); return; }
-                peerManager.createGroup(parts[1]);
-                break;
-            case "add":
-                if (parts.length < 3) { System.out.println("Usage: /group add <name> <peer>"); return; }
-                peerManager.addToGroup(parts[1], parts[2]);
-                break;
-            case "list":
-                peerManager.listGroups();
-                break;
-            case "msg":
-                if (parts.length < 3) { System.out.println("Usage: /group msg <name> <message>"); return; }
-                String groupName = parts[1];
-                String content = parts[2];
-                peerClient.sendGroupMessage(username, groupName, content);
-                System.out.println("[GROUP-SENT] [" + groupName + "]: " + content);
-                break;
-            default:
-                System.out.println("Unknown group command: " + subCmd);
+                System.out.println("Use the Web UI to create groups with DHT-lite coordinator.");
+            }
+            case "list" -> {
+                peerManager.getGroupCache().getAllEntries().forEach(e ->
+                    System.out.println("  [" + e.getGroupId() + "] " + e.getGroupName() +
+                                       " members=" + e.getMembers().size()));
+            }
+            case "msg" -> {
+                if (parts.length < 3) { System.out.println("Usage: /group msg <groupId> <message>"); return; }
+                peerClient.sendGroupMessage(peerManager.getLocalUsername(), parts[1], parts[2]);
+            }
+            default -> System.out.println("Unknown group command.");
         }
     }
 
     private void showHistory(String peerName) {
-        MessageRepository repo = peerManager.getMessageRepository();
-        var messages = repo.getChatHistory(username, peerName);
-        if (messages.isEmpty()) {
-            System.out.println("No chat history with " + peerName);
-            return;
-        }
-        System.out.println("=== Chat history with " + peerName + " ===");
-        for (Message msg : messages) {
-            String time = com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(msg.getTimestamp());
-            String direction = msg.getSender().equals(username) ? "you -> " + msg.getReceiver() : msg.getSender() + " -> you";
-            System.out.println("  [" + time + "] " + direction + ": " + msg.getContent());
-        }
+        var msgs = peerManager.getMessageRepository().getChatHistory(peerManager.getLocalUsername(), peerName);
+        if (msgs.isEmpty()) { System.out.println("No history with " + peerName); return; }
+        System.out.println("=== Chat with " + peerName + " ===");
+        msgs.forEach(m -> System.out.printf("  [%s] %s -> %s: %s%n",
+                com.mycompany.p2pchat.utils.TimeUtil.formatTimestamp(m.getTimestamp()),
+                m.getSender(), m.getReceiver(), m.getContent()));
+    }
+
+    private boolean requireReg() {
+        if (peerManager.isRegisteredToBootstrap()) return true;
+        System.out.println("[WARN] Not connected. Use the Web UI to connect first.");
+        return false;
     }
 
     private void notifyBootstrapLeave() {
-        try (Socket socket = new Socket(bootstrapHost, bootstrapPort)) {
+        if (!peerManager.isRegisteredToBootstrap()) return;
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(peerManager.getBootstrapHost(), peerManager.getBootstrapPort()), 2000);
             socket.setSoTimeout(2000);
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Message leaveMsg = ProtocolHandler.createPeerLeave(username);
-            out.println(JsonUtil.toJson(leaveMsg));
-            out.flush();
-        } catch (IOException e) {
-            // ignore
-        }
+            out.println(JsonUtil.toJson(ProtocolHandler.createPeerLeave(peerManager.getLocalUsername())));
+        } catch (IOException ignored) {}
     }
 
     public void shutdown() {
         running = false;
-        System.out.println("\nShutting down peer...");
+        System.out.println("\nShutting down...");
         notifyBootstrapLeave();
+        peerManager.getFileTransferManager().stop();
+        coordinatorManager.stop();
         webServer.stop();
-        peerServer.stop();
+        if (peerServer != null) {
+            peerServer.stop();
+        }
         peerClient.shutdown();
         peerManager.shutdown();
         System.out.println("Goodbye!");

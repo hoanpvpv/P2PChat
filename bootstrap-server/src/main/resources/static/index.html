@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Bootstrap Dashboard</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet">
+
+    <style>
+        :root {
+            --bg: #020617;
+
+            --panel: rgba(15, 23, 42, 0.75);
+
+            --line: rgba(255, 255, 255, 0.08);
+
+            --text: #f8fafc;
+            --muted: #94a3b8;
+
+            --primary: #3b82f6;
+            --primary-soft: rgba(59, 130, 246, 0.15);
+
+            --success: #22c55e;
+            --success-soft: rgba(34, 197, 94, 0.15);
+
+            --warning: #f59e0b;
+            --warning-soft: rgba(245, 158, 11, 0.15);
+
+            --danger: #ef4444;
+            --danger-soft: rgba(239, 68, 68, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+
+            font-family: 'Inter', sans-serif;
+
+            color: var(--text);
+
+            background:
+                radial-gradient(circle at top left,
+                    rgba(59, 130, 246, 0.18),
+                    transparent 30%),
+
+                radial-gradient(circle at bottom right,
+                    rgba(139, 92, 246, 0.18),
+                    transparent 30%),
+
+                var(--bg);
+
+            overflow-x: hidden;
+        }
+
+        .shell {
+            max-width: 1450px;
+
+            margin: 0 auto;
+
+            padding: 30px 22px 40px;
+        }
+
+        /* HERO */
+
+        .hero {
+            margin-bottom: 28px;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+
+            padding: 8px 14px;
+
+            border-radius: 999px;
+
+            background: rgba(255, 255, 255, 0.05);
+
+            border: 1px solid rgba(255, 255, 255, 0.08);
+
+            font-size: 12px;
+            font-weight: 600;
+
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+
+            color: #cbd5e1;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+
+            border-radius: 50%;
+
+            background: var(--success);
+
+            box-shadow: 0 0 12px var(--success);
+        }
+
+        h1 {
+            margin-top: 18px;
+
+            font-size: clamp(2.8rem, 6vw, 5rem);
+
+            line-height: 0.95;
+
+            font-weight: 800;
+
+            letter-spacing: -0.05em;
+
+            background: linear-gradient(90deg,
+                    #ffffff,
+                    #93c5fd,
+                    #c4b5fd);
+
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtext {
+            margin-top: 18px;
+
+            max-width: 760px;
+
+            line-height: 1.7;
+
+            color: var(--muted);
+
+            font-size: 1rem;
+        }
+
+        /* STATS */
+
+        .stats {
+            display: grid;
+
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+
+            gap: 18px;
+
+            margin-bottom: 28px;
+        }
+
+        .card,
+        .table-wrap {
+            background: var(--panel);
+
+            border: 1px solid rgba(255, 255, 255, 0.08);
+
+            border-radius: 26px;
+
+            backdrop-filter: blur(18px);
+
+            box-shadow:
+                0 10px 30px rgba(0, 0, 0, 0.28),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        }
+
+        .card {
+            padding: 22px;
+
+            transition: 0.25s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+
+            border-color: rgba(255, 255, 255, 0.16);
+        }
+
+        .label {
+            color: var(--muted);
+
+            font-size: 0.92rem;
+
+            font-weight: 500;
+        }
+
+        .value {
+            margin-top: 14px;
+
+            font-size: 2.5rem;
+
+            font-weight: 800;
+
+            letter-spacing: -0.04em;
+        }
+
+        .value.small {
+            font-size: 1.25rem;
+
+            word-break: break-word;
+        }
+
+        /* GRID */
+
+        .stack {
+            display: grid;
+
+            grid-template-columns: 1fr 1fr;
+
+            gap: 24px;
+        }
+
+        /* PANEL */
+
+        .table-wrap {
+            overflow: hidden;
+        }
+
+        .table-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+
+            padding: 20px 22px;
+
+            border-bottom: 1px solid var(--line);
+        }
+
+        .table-head h2 {
+            font-size: 1.08rem;
+
+            font-weight: 700;
+        }
+
+        .refresh {
+            font-size: 0.9rem;
+
+            color: var(--muted);
+        }
+
+        /* TABLE */
+
+        .event-log-scroll {
+            width: 100%;
+
+            height: 38rem;
+
+            overflow-x: auto;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 16px 20px;
+
+            text-align: left;
+
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+
+            font-size: 0.94rem;
+        }
+
+        th {
+            position: sticky;
+
+            top: 0;
+
+            background: rgba(15, 23, 42, 0.98);
+
+            color: #cbd5e1;
+
+            font-size: 0.76rem;
+            font-weight: 700;
+
+            text-transform: uppercase;
+
+            letter-spacing: 0.08em;
+
+            z-index: 10;
+        }
+
+        tbody tr {
+            transition: background 0.2s ease;
+        }
+
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* BADGES */
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+
+            padding: 7px 12px;
+
+            border-radius: 999px;
+
+            font-size: 0.78rem;
+
+            font-weight: 700;
+        }
+
+        .badge.info {
+            background: var(--primary-soft);
+            color: #60a5fa;
+        }
+
+        .badge.warn {
+            background: var(--warning-soft);
+            color: #fbbf24;
+        }
+
+        .badge.error {
+            background: var(--danger-soft);
+            color: #f87171;
+        }
+
+        .online {
+            background: var(--success-soft);
+            color: #4ade80;
+        }
+
+        .offline {
+            background: var(--danger-soft);
+            color: #f87171;
+        }
+
+        /* EMPTY */
+
+        .empty {
+            padding: 34px 22px;
+
+            text-align: center;
+
+            color: var(--muted);
+        }
+
+        /* SCROLLBAR */
+
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.12);
+
+            border-radius: 999px;
+        }
+
+        /* RESPONSIVE */
+
+        @media (max-width: 1000px) {
+
+            .stack {
+                grid-template-columns: 1fr;
+            }
+
+        }
+
+        @media (max-width: 760px) {
+
+            .shell {
+                padding: 18px 14px 28px;
+            }
+
+            h1 {
+                font-size: 3rem;
+            }
+
+            .value {
+                font-size: 2rem;
+            }
+
+            th:nth-child(2),
+            td:nth-child(2) {
+                display: none;
+            }
+
+        }
+    </style>
+</head>
+
+<body>
+
+    <main class="shell">
+
+        <!-- HERO -->
+
+        <section class="hero">
+
+            <div class="eyebrow">
+                <span class="dot"></span>
+                Bootstrap Server Dashboard
+            </div>
+
+            <h1>
+                Realtime P2P
+                <br>
+                Network Monitor
+            </h1>
+
+            <p class="subtext">
+                Bảng điều khiển phản ánh trạng thái trực tiếp của bootstrap node:
+                các peer đang hoạt động, heartbeat, kết nối và offline messages
+                trong mạng P2P.
+            </p>
+
+        </section>
+
+        <!-- STATS -->
+
+        <section class="stats">
+
+            <article class="card">
+                <div class="label">Server Host</div>
+                <div class="value small" id="serverHost">-</div>
+            </article>
+
+            <article class="card">
+                <div class="label">Bootstrap Port</div>
+                <div class="value" id="bootstrapPort">-</div>
+            </article>
+
+            <article class="card">
+                <div class="label">Dashboard Port</div>
+                <div class="value" id="dashboardPort">-</div>
+            </article>
+
+            <article class="card">
+                <div class="label">Online Peers</div>
+                <div class="value" id="onlinePeerCount">0</div>
+            </article>
+
+            <article class="card">
+                <div class="label">Offline Messages</div>
+                <div class="value" id="offlineMessageCount">0</div>
+            </article>
+
+            <article class="card">
+                <div class="label">Server Status</div>
+                <div class="value small" id="running">-</div>
+            </article>
+
+        </section>
+
+        <!-- TABLES -->
+
+        <section class="stack">
+
+            <!-- PEERS -->
+
+            <section class="table-wrap">
+
+                <div class="table-head">
+
+                    <h2>Known Peers</h2>
+
+                    <div class="refresh" id="lastUpdated">
+                        Loading...
+                    </div>
+
+                </div>
+
+                <div id="tableContent" class="event-log-scroll">
+
+                    <div class="empty">
+                        No peer data yet.
+                    </div>
+
+                </div>
+
+            </section>
+
+            <!-- EVENTS -->
+
+            <section class="table-wrap">
+
+                <div class="table-head">
+
+                    <h2>Realtime Event Log</h2>
+
+                    <div class="refresh" id="eventsUpdated">
+                        Loading...
+                    </div>
+
+                </div>
+
+                <div id="eventsContent" class="event-log-scroll">
+
+                    <div class="empty">
+                        No events yet.
+                    </div>
+
+                </div>
+
+            </section>
+
+        </section>
+
+    </main>
+
+    <script>
+
+        function formatTime(timestamp) {
+
+            if (!timestamp) return "-";
+
+            return new Date(timestamp).toLocaleString();
+        }
+
+        function renderPeers(peers) {
+
+            const container = document.getElementById("tableContent");
+
+            if (!Array.isArray(peers) || peers.length === 0) {
+
+                container.innerHTML = `
+                    <div class="empty">
+                        No peers registered yet.
+                    </div>
+                `;
+
+                return;
+            }
+
+            const rows = peers.map(peer => `
+            
+                <tr>
+
+                    <td>${peer.username}</td>
+
+                    <td>${peer.host}</td>
+
+                    <td>${peer.port}</td>
+
+                    <td>
+                        <span class="badge ${peer.online ? "online" : "offline"}">
+                            ${peer.online ? "Online" : "Offline"}
+                        </span>
+                    </td>
+
+                    <td>${formatTime(peer.lastHeartbeat)}</td>
+
+                </tr>
+
+            `).join("");
+
+            container.innerHTML = `
+            
+                <table>
+
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Host</th>
+                            <th>Port</th>
+                            <th>Status</th>
+                            <th>Last Heartbeat</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows}
+                    </tbody>
+
+                </table>
+
+            `;
+        }
+
+        function renderEvents(events) {
+
+            const container = document.getElementById("eventsContent");
+
+            if (!Array.isArray(events) || events.length === 0) {
+
+                container.innerHTML = `
+                    <div class="empty">
+                        No events yet.
+                    </div>
+                `;
+
+                return;
+            }
+
+            const rows = [...events].reverse().map(event => `
+
+                <tr>
+
+                    <td>${formatTime(event.timestamp)}</td>
+
+                    <td>
+                        <span class="badge ${event.level.toLowerCase()}">
+                            ${event.level}
+                        </span>
+                    </td>
+
+                    <td>${event.type}</td>
+
+                    <td>${event.peer || '-'}</td>
+
+                    <td>${event.detail || '-'}</td>
+
+                </tr>
+
+            `).join("");
+
+            container.innerHTML = `
+
+                <table>
+
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Level</th>
+                            <th>Event</th>
+                            <th>Peer</th>
+                            <th>Detail</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        ${rows}
+                    </tbody>
+
+                </table>
+
+            `;
+
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function refresh() {
+
+            try {
+
+                const [statusRes, peersRes, eventsRes] = await Promise.all([
+
+                    fetch("/api/status", { cache: "no-store" }),
+
+                    fetch("/api/peers", { cache: "no-store" }),
+
+                    fetch("/api/events", { cache: "no-store" })
+
+                ]);
+
+                const status = await statusRes.json();
+
+                const peers = await peersRes.json();
+
+                const events = await eventsRes.json();
+
+                document.getElementById("serverHost").textContent =
+                    status.serverHost;
+
+                document.getElementById("bootstrapPort").textContent =
+                    status.bootstrapPort;
+
+                document.getElementById("dashboardPort").textContent =
+                    status.dashboardPort;
+
+                document.getElementById("onlinePeerCount").textContent =
+                    status.onlinePeerCount;
+
+                document.getElementById("offlineMessageCount").textContent =
+                    status.offlineMessageCount;
+
+                document.getElementById("running").textContent =
+                    status.running ? "Running" : "Stopped";
+
+                document.getElementById("lastUpdated").textContent =
+                    "Updated " + new Date().toLocaleTimeString();
+
+                document.getElementById("eventsUpdated").textContent =
+                    "Updated " + new Date().toLocaleTimeString();
+
+                renderPeers(peers);
+
+                renderEvents(events);
+
+            }
+            catch (error) {
+
+                document.getElementById("lastUpdated").textContent =
+                    "Refresh failed";
+
+                document.getElementById("tableContent").innerHTML = `
+                
+                    <div class="empty">
+                        Cannot load dashboard data: ${error.message}
+                    </div>
+                
+                `;
+
+                document.getElementById("eventsUpdated").textContent =
+                    "Refresh failed";
+
+                document.getElementById("eventsContent").innerHTML = `
+                
+                    <div class="empty">
+                        Cannot load event log: ${error.message}
+                    </div>
+                
+                `;
+            }
+        }
+
+        refresh();
+
+        setInterval(refresh, 3000);
+
+    </script>
+
+</body>
+
+</html>

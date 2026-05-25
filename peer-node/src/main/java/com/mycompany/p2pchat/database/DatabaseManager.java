@@ -29,6 +29,7 @@ public class DatabaseManager {
             connection = DriverManager.getConnection(url);
             try (var stmt = connection.createStatement()) {
                 stmt.execute("PRAGMA journal_mode=WAL");
+                stmt.execute("PRAGMA busy_timeout=5000");
             }
             logger.info("Database connected: " + dbPath);
         }

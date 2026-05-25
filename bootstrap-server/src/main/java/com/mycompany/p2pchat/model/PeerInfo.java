@@ -6,6 +6,8 @@ public class PeerInfo {
     private int port;
     private boolean online;
     private long lastHeartbeat;
+    private String publicKey;
+    private String keyId;
 
     public PeerInfo() {}
 
@@ -31,6 +33,12 @@ public class PeerInfo {
 
     public long getLastHeartbeat() { return lastHeartbeat; }
     public void setLastHeartbeat(long lastHeartbeat) { this.lastHeartbeat = lastHeartbeat; }
+
+    public String getPublicKey() { return publicKey; }
+    public void setPublicKey(String publicKey) { this.publicKey = publicKey; }
+
+    public String getKeyId() { return keyId; }
+    public void setKeyId(String keyId) { this.keyId = keyId; }
 
     public String getAddress() {
         return host + ":" + port;

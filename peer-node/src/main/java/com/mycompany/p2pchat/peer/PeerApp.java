@@ -1,42 +1,42 @@
 package com.mycompany.p2pchat.peer;
 
-import com.mycompany.p2pchat.utils.Constants;
-
 public class PeerApp {
 
     public static void main(String[] args) {
-        String username = "peer";
-        int port = Constants.DEFAULT_PEER_PORT;
-        String bootstrapHost = "localhost";
-        int bootstrapPort = Constants.DEFAULT_BOOTSTRAP_PORT;
-        String host = "localhost";
-        int webPort = Constants.DEFAULT_WEB_PORT;
+        int webPort = com.mycompany.p2pchat.utils.Constants.DEFAULT_WEB_PORT;
+        String bootstrap = null;
+        String username = null;
+        String host = null;
+        String mailbox = null;
+        int peerPort = 0;
 
         for (int i = 0; i < args.length; i++) {
-            switch (args[i]) {
-                case "--username":
-                    if (i + 1 < args.length) { username = args[++i]; }
-                    break;
-                case "--port":
-                    if (i + 1 < args.length) { port = Integer.parseInt(args[++i]); }
-                    break;
-                case "--host":
-                    if (i + 1 < args.length) { host = args[++i]; }
-                    break;
-                case "--bootstrap":
-                    if (i + 1 < args.length) {
-                        String[] bp = args[++i].split(":");
-                        bootstrapHost = bp[0];
-                        if (bp.length > 1) bootstrapPort = Integer.parseInt(bp[1]);
-                    }
-                    break;
-                case "--web":
-                    if (i + 1 < args.length) { webPort = Integer.parseInt(args[++i]); }
-                    break;
+            if (args[i].equals("--web") && i + 1 < args.length) {
+                try {
+                    webPort = Integer.parseInt(args[++i]);
+                } catch (NumberFormatException e) {
+                    System.out.println("Invalid web port: " + args[i] + ". Using default: " + com.mycompany.p2pchat.utils.Constants.DEFAULT_WEB_PORT);
+                }
+            } else if (args[i].equals("--bootstrap") && i + 1 < args.length) {
+                bootstrap = args[++i];
+            } else if (args[i].equals("--username") && i + 1 < args.length) {
+                username = args[++i];
+            } else if (args[i].equals("--host") && i + 1 < args.length) {
+                host = args[++i];
+            } else if (args[i].equals("--mailbox") && i + 1 < args.length) {
+                mailbox = args[++i];
+            } else if (args[i].equals("--port") && i + 1 < args.length) {
+                try {
+                    peerPort = Integer.parseInt(args[++i]);
+                } catch (NumberFormatException e) {
+                    System.out.println("Invalid peer port: " + args[i]);
+                }
             }
         }
 
-        PeerNode peer = new PeerNode(username, host, port, bootstrapHost, bootstrapPort, webPort);
+        PeerNode peer = new PeerNode(webPort);
+        peer.setConfig(username, host, peerPort, bootstrap);
+        peer.setMailboxConfig(mailbox);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("\nShutting down peer...");
         }));

@@ -2,3 +2,11 @@ target/
 data/
 peer-web/node_modules/
 peer-web/build/
+.git/
+.idea/
+.vscode/
+*.log
+logs/
+__pycache__/
+*.pyc
+dependency-reduced-pom.xml

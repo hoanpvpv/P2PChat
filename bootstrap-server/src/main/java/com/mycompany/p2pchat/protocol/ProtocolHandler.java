@@ -40,11 +40,19 @@ public class ProtocolHandler {
     }
 
     public static Message createRegister(String username, String host, int port) {
+        return createRegister(username, host, port, null, null);
+    }
+
+    public static Message createRegister(String username, String host, int port, String keyId, String publicKey) {
+        String content = host + ":" + port;
+        if (keyId != null && !keyId.isBlank() && publicKey != null && !publicKey.isBlank()) {
+            content += "|" + keyId + "|" + publicKey;
+        }
         return Message.builder()
                 .type(MessageType.REGISTER.name())
                 .messageId(generateMessageId())
                 .sender(username)
-                .content(host + ":" + port)
+                .content(content)
                 .timestamp(System.currentTimeMillis())
                 .build();
     }
@@ -127,11 +135,19 @@ public class ProtocolHandler {
     }
 
     public static Message createPeerJoin(String username, String host, int port) {
+        return createPeerJoin(username, host, port, null, null);
+    }
+
+    public static Message createPeerJoin(String username, String host, int port, String keyId, String publicKey) {
+        String content = host + ":" + port;
+        if (keyId != null && !keyId.isBlank() && publicKey != null && !publicKey.isBlank()) {
+            content += "|" + keyId + "|" + publicKey;
+        }
         return Message.builder()
                 .type(MessageType.PEER_JOIN.name())
                 .messageId(generateMessageId())
                 .sender(username)
-                .content(host + ":" + port)
+                .content(content)
                 .timestamp(System.currentTimeMillis())
                 .build();
     }
