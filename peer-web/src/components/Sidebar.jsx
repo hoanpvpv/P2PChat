@@ -190,8 +190,8 @@ export default function Sidebar({
       <div className="sidebar-list">
         {(groups || []).filter(g => g.groupName?.toLowerCase().includes(groupSearch.toLowerCase())).map(group => {
           const isActive = activeGroupId === group.groupId;
-          const iAmOwner = group.owner === address;
-          const iAmCoord = group.coordinators?.includes(address);
+          const iAmOwner = group.owner === username;
+          const iAmCoord = group.coordinators?.includes(username);
 
           return (
             <div key={group.groupId} className={`group-item-wrapper ${group.groupState === 'LEAVING' ? 'leaving' : ''}`}>
@@ -229,7 +229,7 @@ export default function Sidebar({
                   <div className="group-members-title">Members</div>
                   <div className="group-members-list">
                     {(group.members || []).map(addr => {
-                      const peerName = peers.find(p => p.host + ':' + p.port === addr)?.username || addr;
+                      const peerName = addr; // now a username
                       const mIsOwner = addr === group.owner;
                       const mIsCoord = group.coordinators?.includes(addr);
                       return (
@@ -237,7 +237,7 @@ export default function Sidebar({
                           <span className="member-name">{peerName}</span>
                           {mIsOwner && <span className="role-badge owner" title="Owner">👑</span>}
                           {mIsCoord && <span className="role-badge coord" title="Coordinator">c</span>}
-                          {iAmOwner && addr !== address && (
+                          {iAmOwner && addr !== username && (
                             <button className="btn-kick" title="Kick"
                               onClick={e => { e.stopPropagation(); onKickFromGroup(group.groupId, peerName); }}>
                               ✕
@@ -289,9 +289,7 @@ export default function Sidebar({
 
 function AddMemberRow({ groupId, existingAddrs, peers, onAdd }) {
   const [search, setSearch] = useState('');
-  const available = peers.filter(p =>
-    !existingAddrs.some(addr => addr.includes(p.host) && addr.includes(String(p.port)))
-  );
+  const available = peers.filter(p => !existingAddrs.includes(p.username));
   if (!available.length) return null;
 
   const filtered = available.filter(p => p.username.toLowerCase().includes(search.toLowerCase()));

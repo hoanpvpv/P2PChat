@@ -114,6 +114,23 @@ public class PeerManager {
         return knownPeers.get(username);
     }
 
+    public String resolveUsername(String address) {
+        if (address == null || address.isEmpty()) return "";
+        if (address.equals(getLocalAddress())) return getLocalUsername();
+        for (PeerInfo p : knownPeers.values()) {
+            if (address.equals(p.getAddress())) return p.getUsername();
+        }
+        for (var p : getRecentPeersCache().getAll()) {
+            if (address.equals(p.address)) return p.username;
+        }
+        return address;
+    }
+
+    public java.util.List<String> mapToUsernames(java.util.List<String> addresses) {
+        if (addresses == null) return new ArrayList<>();
+        return addresses.stream().map(this::resolveUsername).collect(java.util.stream.Collectors.toList());
+    }
+
     public List<PeerInfo> getOnlinePeers() {
         return knownPeers.values().stream().filter(PeerInfo::isOnline).toList();
     }

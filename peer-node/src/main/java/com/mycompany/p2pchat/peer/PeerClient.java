@@ -44,6 +44,8 @@ public class PeerClient {
         this.e2eeCrypto = E2EECrypto.loadOrCreate();
     }
 
+    public MailboxClient getMailboxClient() { return mailboxClient; }
+
     // ==================== Direct Message ====================
 
     public boolean sendDirectMessage(String sender, String receiver, String content) {

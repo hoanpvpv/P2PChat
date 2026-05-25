@@ -400,8 +400,8 @@ export default function App() {
   // ── Chat UI ───────────────────────────────────────────────
   const activeChatGroup = activeChat?.type === 'group'
     ? groups.find(g => g.groupId === activeChat.id) : null;
-  const isOwner = activeChatGroup?.owner === info.address;
-  const isCoord = activeChatGroup?.coordinators?.includes(info.address);
+  const isOwner = activeChatGroup?.owner === info.username;
+  const isCoord = activeChatGroup?.coordinators?.includes(info.username);
 
   return (
     <div className="app">

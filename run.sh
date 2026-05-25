@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -e
 
+# Fix for Windows Git Bash: Prevent path conversion for Docker volumes like /app/data
+export MSYS_NO_PATHCONV=1
+
+# Fix for Windows: fallback to python if python3 is not found
+if ! command -v python3 >/dev/null 2>&1; then
+    if command -v python >/dev/null 2>&1; then
+        python3() { python "$@"; }
+        export -f python3
+    elif command -v py >/dev/null 2>&1; then
+        python3() { py -3 "$@"; }
+        export -f python3
+    fi
+fi
+
 cd "$(dirname "$0")"
 
 NETWORK="p2p-net"
@@ -347,7 +361,7 @@ list() {
 }
 
 # Tạo trang HTML index liệt kê tất cả peer + URL của chúng.
-# Mở file://$(pwd)/peers-index.html trong trình duyệt, bookmark để bấm 1 phát vào UI.
+# MềEfile://$(pwd)/peers-index.html trong trình duyệt, bookmark đềEbấm 1 phát vào UI.
 gen_index() {
     local out="$(pwd)/peers-index.html"
     {
@@ -369,7 +383,7 @@ gen_index() {
  button.refresh{float:right;background:#334155;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer}
 </style></head><body>
 <h1>P2PChat Peers <button class="refresh" onclick="location.reload()">↻ Refresh</button></h1>
-<p class="sub">Bookmark this page. Re-run <code>./run.sh peer &lt;name&gt;</code> rồi refresh để cập nhật.</p>
+<p class="sub">Bookmark this page. Re-run <code>./run.sh peer &lt;name&gt;</code> rồi refresh đềEcập nhật.</p>
 <div class="grid">
 HEAD
         for c in $(docker ps --filter "name=^peer-" --format '{{.Names}}' | sort); do
@@ -391,7 +405,7 @@ FOOT
         echo "<div style=\"margin-top:12px;font-size:11px;color:#475569\">Generated $(date '+%Y-%m-%d %H:%M:%S')</div>"
         echo "</div></body></html>"
     } > "$out"
-    echo "→ Đã cập nhật file://$out"
+    echo "ↁEĐã cập nhật file://$out"
 }
 
 urls() {
@@ -465,7 +479,7 @@ case "${1:-help}" in
         echo "  ./run.sh start [n1] [n2]    Start 2 peers (default: alice, bob)"
         echo "  ./run.sh launcher           Open localhost UI to create peers"
         echo "  ./run.sh list               List running peers + URLs"
-        echo "  ./run.sh urls               Mở file peers-index.html (clickable links cho tất cả peer)"
+        echo "  ./run.sh urls               MềEfile peers-index.html (clickable links cho tất cả peer)"
         echo "  ./run.sh doctor [ip port]   Check local config and optional remote direct TCP"
         echo "  ./run.sh logs [name|s]      Follow logs"
         echo "  ./run.sh stop               Stop all"
