@@ -20,16 +20,17 @@ public class MessageRepository {
         if (messageExists(msg.getMessageId())) {
             return false;
         }
-        String sql = "INSERT INTO messages (message_id, sender, receiver, group_name, content, type, timestamp, delivered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO messages (message_id, sender, receiver, group_name, group_id, content, type, timestamp, delivered) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
             pstmt.setString(1, msg.getMessageId());
             pstmt.setString(2, msg.getSender());
             pstmt.setString(3, msg.getReceiver());
             pstmt.setString(4, msg.getGroupName());
-            pstmt.setString(5, msg.getContent());
-            pstmt.setString(6, msg.getType());
-            pstmt.setLong(7, msg.getTimestamp());
-            pstmt.setInt(8, 1);
+            pstmt.setString(5, msg.getGroupId());
+            pstmt.setString(6, msg.getContent());
+            pstmt.setString(7, msg.getType());
+            pstmt.setLong(8, msg.getTimestamp());
+            pstmt.setInt(9, 1);
             pstmt.executeUpdate();
             return true;
         } catch (SQLException e) {
@@ -38,11 +39,11 @@ public class MessageRepository {
         }
     }
 
-    public List<String> getRecentGroupMessageIds(String groupName, long sinceMillis) {
+    public List<String> getRecentGroupMessageIds(String groupId, long sinceMillis) {
         List<String> ids = new ArrayList<>();
-        String sql = "SELECT message_id FROM messages WHERE group_name = ? AND type = 'GROUP_MESSAGE' AND timestamp >= ? ORDER BY timestamp ASC";
+        String sql = "SELECT message_id FROM messages WHERE group_id = ? AND type = 'GROUP_MESSAGE' AND timestamp >= ? ORDER BY timestamp ASC";
         try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
-            ps.setString(1, groupName);
+            ps.setString(1, groupId);
             ps.setLong(2, sinceMillis);
             ResultSet rs = ps.executeQuery();
             while (rs.next()) ids.add(rs.getString("message_id"));
@@ -120,11 +121,11 @@ public class MessageRepository {
         return messages;
     }
 
-    public List<Message> getGroupHistory(String groupName) {
+    public List<Message> getGroupHistory(String groupId) {
         List<Message> messages = new ArrayList<>();
-        String sql = "SELECT * FROM messages WHERE group_name = ? AND type IN ('GROUP_MESSAGE', 'FILE_OFFER', 'SYSTEM') ORDER BY timestamp ASC";
+        String sql = "SELECT * FROM messages WHERE group_id = ? AND type IN ('GROUP_MESSAGE', 'FILE_OFFER', 'SYSTEM') ORDER BY timestamp ASC";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql)) {
-            pstmt.setString(1, groupName);
+            pstmt.setString(1, groupId);
             ResultSet rs = pstmt.executeQuery();
             while (rs.next()) {
                 messages.add(mapResultSetToMessage(rs));
@@ -155,6 +156,7 @@ public class MessageRepository {
                 .sender(rs.getString("sender"))
                 .receiver(rs.getString("receiver"))
                 .groupName(rs.getString("group_name"))
+                .groupId(rs.getString("group_id"))
                 .content(rs.getString("content"))
                 .type(rs.getString("type"))
                 .timestamp(rs.getLong("timestamp"))

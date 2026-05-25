@@ -52,7 +52,7 @@ public class PeerManager {
         this.dbManager = new DatabaseManager(dbName);
         this.dbManager.init();
         this.messageRepository = new MessageRepository(dbManager);
-        this.groupCache = new GroupCache();
+        this.groupCache = new GroupCache(dbManager);
         this.lamportClock = new LamportClock();
         this.recentPeersCache = new RecentPeersCache(dbManager);
         this.outboxRepository = new com.mycompany.p2pchat.database.OutboxRepository(dbManager);

@@ -17,6 +17,69 @@ public class GroupCache {
 
     private static final Logger logger = LoggerUtil.getLogger(GroupCache.class.getName());
     private final Map<String, GroupCacheEntry> cache = new ConcurrentHashMap<>();
+    private final com.mycompany.p2pchat.database.DatabaseManager dbManager;
+
+    public GroupCache(com.mycompany.p2pchat.database.DatabaseManager dbManager) {
+        this.dbManager = dbManager;
+        loadFromDb();
+    }
+
+    private void loadFromDb() {
+        if (dbManager == null) return;
+        String sql = "SELECT * FROM group_cache";
+        try (java.sql.Connection conn = dbManager.getConnection();
+             java.sql.PreparedStatement pstmt = conn.prepareStatement(sql);
+             java.sql.ResultSet rs = pstmt.executeQuery()) {
+            while (rs.next()) {
+                GroupCacheEntry e = new GroupCacheEntry();
+                e.setGroupId(rs.getString("group_id"));
+                e.setGroupName(rs.getString("group_name"));
+                e.setOwner(rs.getString("owner"));
+                e.setMembers(new ArrayList<>(Arrays.asList(rs.getString("members").split(","))));
+                e.setCoordinators(new ArrayList<>(Arrays.asList(rs.getString("coordinators").split(","))));
+                e.setLocalVersion(rs.getLong("version"));
+                e.setGroupMode(rs.getString("group_mode"));
+                e.setGroupState(rs.getString("group_state"));
+                e.setLastUpdated(rs.getLong("last_updated"));
+                cache.put(e.getGroupId(), e);
+            }
+            logger.info("Loaded " + cache.size() + " groups from db");
+        } catch (Exception e) {
+            logger.fine("Failed to load group cache from db: " + e.getMessage());
+        }
+    }
+
+    private void persist(GroupCacheEntry e) {
+        if (dbManager == null) return;
+        String sql = "INSERT OR REPLACE INTO group_cache (group_id, group_name, owner, members, coordinators, version, group_mode, group_state, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        try (java.sql.Connection conn = dbManager.getConnection();
+             java.sql.PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, e.getGroupId());
+            pstmt.setString(2, e.getGroupName());
+            pstmt.setString(3, e.getOwner());
+            pstmt.setString(4, String.join(",", e.getMembers()));
+            pstmt.setString(5, String.join(",", e.getCoordinators()));
+            pstmt.setLong(6, e.getLocalVersion());
+            pstmt.setString(7, e.getGroupMode());
+            pstmt.setString(8, e.getGroupState());
+            pstmt.setLong(9, e.getLastUpdated());
+            pstmt.executeUpdate();
+        } catch (Exception ex) {
+            logger.fine("Failed to persist group cache: " + ex.getMessage());
+        }
+    }
+
+    private void deleteFromDb(String groupId) {
+        if (dbManager == null) return;
+        String sql = "DELETE FROM group_cache WHERE group_id = ?";
+        try (java.sql.Connection conn = dbManager.getConnection();
+             java.sql.PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, groupId);
+            pstmt.executeUpdate();
+        } catch (Exception ex) {
+            logger.fine("Failed to delete group cache: " + ex.getMessage());
+        }
+    }
 
     public static class GroupCacheEntry {
         private String groupId;
@@ -77,6 +140,7 @@ public class GroupCache {
         entry.setLastUpdated(System.currentTimeMillis());
         entry.setGroupMode(info.getGroupMode());
         entry.setGroupState("ACTIVE");
+        persist(entry);
         logger.info("GroupCache updated: " + info.getGroupId() + " v=" + info.getVersion());
     }
 
@@ -86,10 +150,12 @@ public class GroupCache {
 
     public void put(String groupId, GroupCacheEntry entry) {
         cache.put(groupId, entry);
+        persist(entry);
     }
 
     public void remove(String groupId) {
         cache.remove(groupId);
+        deleteFromDb(groupId);
         logger.info("GroupCache removed: " + groupId);
     }
 
@@ -97,6 +163,7 @@ public class GroupCache {
         GroupCacheEntry entry = cache.get(groupId);
         if (entry != null) {
             entry.setGroupState(state);
+            persist(entry);
         }
     }
 

@@ -144,9 +144,7 @@ public class WebServer {
 
         app.get("/api/group-history/{groupId}", ctx -> {
             String groupId = ctx.pathParam("groupId");
-            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
-            String groupName = entry != null ? entry.getGroupName() : groupId;
-            List<Message> msgs = peerManager.getMessageRepository().getGroupHistory(groupName);
+            List<Message> msgs = peerManager.getMessageRepository().getGroupHistory(groupId);
             ctx.contentType("application/json").result(gson.toJson(msgs));
         });
 
@@ -288,30 +286,31 @@ public class WebServer {
 
             if (groupName.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupName"))); return; }
             if (memberUsernames.size() < 2) { ctx.status(400).result(gson.toJson(Map.of("error", "Group must have at least 3 members (including you)"))); return; }
+            
+            boolean nameExists = peerManager.getGroupCache().getActiveGroups().stream()
+                    .anyMatch(g -> g.getGroupName().equalsIgnoreCase(groupName.trim()));
+            if (nameExists) {
+                ctx.status(400).result(gson.toJson(Map.of("error", "Group '" + groupName + "' already exists")));
+                return;
+            }
 
             // Resolve member addresses
             List<String> memberAddresses = new ArrayList<>();
             memberAddresses.add(peerManager.getLocalAddress());
             List<String> missingMembers = new ArrayList<>();
-            List<String> unreachableMembers = new ArrayList<>();
             for (String uname : memberUsernames) {
                 PeerInfo peer = peerManager.getPeer(uname);
-                if (peer != null && peer.isOnline()) {
-                    if (!canConnectAddress(peer.getAddress())) {
-                        unreachableMembers.add(uname + "@" + peer.getAddress());
-                        continue;
-                    }
+                if (peer != null) {
                     memberAddresses.add(peer.getAddress());
                     peerManager.getRecentPeersCache().upsert(uname, peer.getAddress());
                 } else {
                     missingMembers.add(uname);
                 }
             }
-            if (!missingMembers.isEmpty() || !unreachableMembers.isEmpty()) {
+            if (!missingMembers.isEmpty()) {
                 Map<String, Object> error = new HashMap<>();
-                error.put("error", "Some group members are not direct-reachable");
+                error.put("error", "Some group members are unknown (not in known_peers)");
                 error.put("missingOrOffline", missingMembers);
-                error.put("unreachable", unreachableMembers);
                 ctx.status(409).contentType("application/json").result(gson.toJson(error));
                 return;
             }
@@ -381,13 +380,6 @@ public class WebServer {
             if (entry == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Group not found"))); return; }
             PeerInfo peer = peerManager.getPeer(username);
             if (peer == null) { ctx.status(404).result(gson.toJson(Map.of("error", "Peer not found"))); return; }
-            if (!peer.isOnline() || !canConnectAddress(peer.getAddress())) {
-                ctx.status(409).result(gson.toJson(Map.of(
-                        "error", "Peer is not direct-reachable",
-                        "peer", username,
-                        "address", peer.getAddress())));
-                return;
-            }
             peerManager.getRecentPeersCache().upsert(username, peer.getAddress());
 
             Message addMsg = Message.builder()
