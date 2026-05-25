@@ -2,6 +2,7 @@ package com.mycompany.p2pchat.peer;
 
 import com.mycompany.p2pchat.model.GroupInfo;
 import com.mycompany.p2pchat.model.Message;
+import com.mycompany.p2pchat.model.PeerInfo;
 import com.mycompany.p2pchat.protocol.JsonUtil;
 import com.mycompany.p2pchat.protocol.MessageType;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
@@ -511,7 +512,22 @@ public class CoordinatorManager {
                 .build();
     }
 
-    private void sendTcpMessage(String address, Message msg) {
+    private void sendTcpMessage(String usernameOrAddress, Message msg) {
+        String address = usernameOrAddress;
+        if (!address.contains(":")) {
+            PeerInfo p = peerManager.getPeer(usernameOrAddress);
+            if (p != null) {
+                address = p.getAddress();
+            } else {
+                address = peerManager.getRecentPeersCache().getAddress(usernameOrAddress);
+            }
+        }
+        
+        if (address == null || address.isEmpty() || !address.contains(":")) {
+            logger.warning("Could not resolve address for: " + usernameOrAddress);
+            throw new RuntimeException("Unresolved address for " + usernameOrAddress);
+        }
+
         String[] parts = address.split(":");
         if (parts.length != 2) {
             logger.warning("Invalid address format (expected host:port): " + address);

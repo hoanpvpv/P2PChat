@@ -49,10 +49,9 @@ public class PeerNode {
 
         // We defer starting CoordinatorManager and LazyRepairManager until initPeer()
         // But we can initialize them with a dummy address for now to avoid nulls
-        String myAddress = "localhost:" + this.port;
-        this.coordinatorManager = new CoordinatorManager(myAddress, peerManager);
+        this.coordinatorManager = new CoordinatorManager(this.peerManager.getLocalUsername(), peerManager);
         this.peerManager.setCoordinatorManager(this.coordinatorManager);
-        this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
+        this.lazyRepairManager = new LazyRepairManager(peerManager, this.peerManager.getLocalUsername());
         this.peerManager.setLazyRepairManager(lazyRepairManager);
 
         this.peerServer = null;
@@ -114,7 +113,7 @@ public class PeerNode {
         this.peerManager.setLocalUsername(username);
         this.peerManager.clearKnownPeers();
         
-        String myAddress = peerManager.getLocalHost() + ":" + peerPort;
+        String myAddress = username;
 
         if (this.peerServer != null) {
             this.peerServer.stop();
@@ -129,7 +128,7 @@ public class PeerNode {
         this.peerManager.setCoordinatorManager(this.coordinatorManager);
         this.coordinatorManager.start();
 
-        this.lazyRepairManager = new LazyRepairManager(peerManager.getGroupCache(), myAddress);
+        this.lazyRepairManager = new LazyRepairManager(peerManager, myAddress);
         this.peerManager.setLazyRepairManager(lazyRepairManager);
 
         this.peerServer = new PeerServer(peerPort, peerManager);
@@ -247,10 +246,9 @@ public class PeerNode {
 
     private void pullMailboxMessagesToWeb() {
         for (Message message : peerClient.pullMailboxMessages()) {
-            String eventType = "DIRECT_MESSAGE";
-            if ("BROADCAST".equals(message.getType())) eventType = "BROADCAST";
-            if ("GROUP_MESSAGE".equals(message.getType())) eventType = "GROUP_MESSAGE";
-            webServer.broadcastToWeb(eventType, messageToMap(message));
+            if (peerServer != null) {
+                peerServer.processMessage(message, null);
+            }
         }
     }
 

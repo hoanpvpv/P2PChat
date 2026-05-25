@@ -2,6 +2,7 @@ package com.mycompany.p2pchat.peer;
 
 import com.mycompany.p2pchat.model.GroupInfo;
 import com.mycompany.p2pchat.model.Message;
+import com.mycompany.p2pchat.model.PeerInfo;
 import com.mycompany.p2pchat.protocol.JsonUtil;
 import com.mycompany.p2pchat.protocol.MessageType;
 import com.mycompany.p2pchat.protocol.ProtocolHandler;
@@ -23,10 +24,12 @@ public class LazyRepairManager {
 
     private static final Logger logger = LoggerUtil.getLogger(LazyRepairManager.class.getName());
     private final GroupCache groupCache;
+    private final PeerManager peerManager;
     private final String myAddress;
 
-    public LazyRepairManager(GroupCache groupCache, String myAddress) {
-        this.groupCache = groupCache;
+    public LazyRepairManager(PeerManager peerManager, String myAddress) {
+        this.groupCache = peerManager.getGroupCache();
+        this.peerManager = peerManager;
         this.myAddress = myAddress;
     }
 
@@ -100,7 +103,15 @@ public class LazyRepairManager {
     /**
      * Send TCP message and wait for response.
      */
-    private Message sendAndReceive(String address, Message msg) {
+    private Message sendAndReceive(String usernameOrAddress, Message msg) {
+        String address = usernameOrAddress;
+        if (!address.contains(":")) {
+            PeerInfo p = peerManager.getPeer(usernameOrAddress);
+            if (p != null) address = p.getAddress();
+            else address = peerManager.getRecentPeersCache().getAddress(usernameOrAddress);
+        }
+        if (address == null || !address.contains(":")) return null;
+
         String[] parts = address.split(":");
         if (parts.length != 2) return null;
 

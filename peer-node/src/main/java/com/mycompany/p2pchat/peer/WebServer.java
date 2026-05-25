@@ -294,14 +294,14 @@ public class WebServer {
                 return;
             }
 
-            // Resolve member addresses
-            List<String> memberAddresses = new ArrayList<>();
-            memberAddresses.add(peerManager.getLocalAddress());
+            // Resolve member addresses and build username list
+            List<String> groupMembers = new ArrayList<>();
+            groupMembers.add(peerManager.getLocalUsername());
             List<String> missingMembers = new ArrayList<>();
             for (String uname : memberUsernames) {
                 PeerInfo peer = peerManager.getPeer(uname);
                 if (peer != null) {
-                    memberAddresses.add(peer.getAddress());
+                    groupMembers.add(uname);
                     peerManager.getRecentPeersCache().upsert(uname, peer.getAddress());
                 } else {
                     missingMembers.add(uname);
@@ -314,20 +314,20 @@ public class WebServer {
                 ctx.status(409).contentType("application/json").result(gson.toJson(error));
                 return;
             }
-            if (memberAddresses.size() != memberUsernames.size() + 1) {
+            if (groupMembers.size() != memberUsernames.size() + 1) {
                 ctx.status(409).result(gson.toJson(Map.of("error", "Group member resolution failed")));
                 return;
             }
 
             // Create GroupInfo
-            GroupInfo info = GroupInfo.create(groupName, peerManager.getLocalAddress(), memberAddresses);
+            GroupInfo info = GroupInfo.create(groupName, peerManager.getLocalUsername(), groupMembers);
             info.setGroupMode(groupMode);
 
             // Determine coordinators via HRW
             List<String> coords = HRWHash.topK(info.getMembers(), info.getGroupId(), Constants.COORDINATOR_K);
 
             // If we are a coordinator — manage locally
-            if (coords.contains(peerManager.getLocalAddress()) && coordinatorManager != null) {
+            if (coords.contains(peerManager.getLocalUsername()) && coordinatorManager != null) {
                 coordinatorManager.manageGroup(info);
             }
 
@@ -345,15 +345,15 @@ public class WebServer {
 
             // COORD_INIT to other coordinators
             for (String coord : coords) {
-                if (!coord.equals(peerManager.getLocalAddress())) {
+                if (!coord.equals(peerManager.getLocalUsername())) {
                     sendCoordInit(coord, info);
                 }
             }
 
             // GROUP_JOINED to all members
-            for (String addr : info.getMembers()) {
-                if (!addr.equals(peerManager.getLocalAddress())) {
-                    sendGroupJoined(addr, info, coords);
+            for (String member : info.getMembers()) {
+                if (!member.equals(peerManager.getLocalUsername())) {
+                    sendGroupJoined(member, info, coords);
                 }
             }
 
@@ -386,10 +386,10 @@ public class WebServer {
                     .type(MessageType.GROUP_ADD.name())
                     .messageId(ProtocolHandler.generateMessageId())
                     .requestId(UUID.randomUUID().toString())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .groupId(groupId)
-                    .requester(peerManager.getLocalAddress())
-                    .newMember(peer.getAddress())
+                    .requester(peerManager.getLocalUsername())
+                    .newMember(username)
                     .build();
 
             Message response = peerClient.sendToCoordinator(groupId, addMsg);
@@ -403,8 +403,8 @@ public class WebServer {
 
                 // Build danh sách members mới (thêm người mới vào)
                 List<String> newMembers = new java.util.ArrayList<>(entry.getMembers());
-                if (!newMembers.contains(peer.getAddress())) {
-                    newMembers.add(peer.getAddress());
+                if (!newMembers.contains(username)) {
+                    newMembers.add(username);
                 }
                 List<String> coords = HRWHash.topK(newMembers, groupId, Constants.COORDINATOR_K);
 
@@ -419,15 +419,15 @@ public class WebServer {
                 updatedInfo.setGroupMode(entry.getGroupMode());
                 peerManager.getGroupCache().updateFromGroupInfo(updatedInfo);
 
-                // Gửi GROUP_JOINED trực tiếp cho người mới (đang online)
-                sendGroupJoined(peer.getAddress(), updatedInfo, coords);
+                // Gửi GROUP_JOINED trực tiếp cho người mới
+                sendGroupJoined(username, updatedInfo, coords);
                 logger.info("[ADD-FALLBACK] Sent GROUP_JOINED directly to " + username);
 
                 // Thông báo cho các thành viên offline qua mailbox
                 storeControlEventToMailbox(
                         peerManager.getGroupCache().get(groupId),
                         groupId, MessageType.GROUP_UPDATED.name(),
-                        peer.getAddress()); // exclude người vừa thêm (đã nhận trực tiếp)
+                        username); // exclude người vừa thêm
 
                 ctx.contentType("application/json").result(gson.toJson(Map.of(
                         "type", "GROUP_UPDATED_LOCAL",
@@ -447,22 +447,12 @@ public class WebServer {
             if (groupId.isEmpty() || target.isEmpty()) {
                 ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId or target"))); return;
             }
-            PeerInfo targetPeer = peerManager.getPeer(target);
-            String targetAddr = targetPeer != null ? targetPeer.getAddress() : target;
-            if (!canConnectAddress(targetAddr)) {
-                ctx.status(409).result(gson.toJson(Map.of(
-                        "error", "Target is not direct-reachable; kick notification would be lost",
-                        "target", target,
-                        "address", targetAddr)));
-                return;
-            }
-
             Message kickMsg = Message.builder()
                     .type(MessageType.GROUP_KICK.name())
                     .messageId(ProtocolHandler.generateMessageId())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .groupId(groupId)
-                    .target(targetAddr)
+                    .target(target)
                     .build();
             Message response = peerClient.sendToCoordinator(groupId, kickMsg);
             ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
@@ -479,7 +469,7 @@ public class WebServer {
             Message leaveMsg = Message.builder()
                     .type(MessageType.GROUP_LEAVE.name())
                     .messageId(ProtocolHandler.generateMessageId())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .groupId(groupId)
                     .newOwner(newOwner.isEmpty() ? null : newOwner)
                     .build();
@@ -491,7 +481,7 @@ public class WebServer {
             if (MessageType.ERROR.name().equals(response.getType()) && entry != null) {
                 logger.warning("All coordinators unreachable for leave " + groupId
                         + " — broadcasting leave directly to members");
-                broadcastLeaveDirectly(entry, groupId, peerManager.getLocalAddress());
+                broadcastLeaveDirectly(entry, groupId, peerManager.getLocalUsername());
             }
 
             peerManager.getGroupCache().setState(groupId, "DISBANDED");
@@ -509,7 +499,7 @@ public class WebServer {
             Message disbandMsg = Message.builder()
                     .type(MessageType.GROUP_DISBAND.name())
                     .messageId(ProtocolHandler.generateMessageId())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .groupId(groupId)
                     .build();
             Message response = peerClient.sendToCoordinator(groupId, disbandMsg);
@@ -676,14 +666,25 @@ public class WebServer {
         }
     }
 
-    private void sendCoordInit(String address, GroupInfo info) {
+    private void sendCoordInit(String usernameOrAddress, GroupInfo info) {
+        String address = usernameOrAddress;
+        String targetUsername = usernameOrAddress;
+        if (!address.contains(":")) {
+            PeerInfo p = peerManager.getPeer(usernameOrAddress);
+            if (p != null) address = p.getAddress();
+            else address = peerManager.getRecentPeersCache().getAddress(usernameOrAddress);
+        } else {
+            targetUsername = peerManager.resolveUsername(address);
+        }
+
+        if (address == null || !address.contains(":")) return;
         String[] parts = address.split(":");
         if (parts.length != 2) return;
         
         Message initMsg = Message.builder()
                 .type(MessageType.COORD_INIT.name())
                 .messageId(ProtocolHandler.generateMessageId())
-                .sender(peerManager.getLocalAddress())
+                .sender(peerManager.getLocalUsername())
                 .groupId(info.getGroupId())
                 .groupInfo(info)
                 .build();
@@ -700,7 +701,6 @@ public class WebServer {
         }
         
         if (!tcpSent) {
-            String targetUsername = peerManager.resolveUsername(address);
             if (targetUsername != null && !targetUsername.isBlank()) {
                 String payloadJson = new com.google.gson.Gson().toJson(initMsg);
                 String payloadHash = sha256Hex(payloadJson);
@@ -715,14 +715,25 @@ public class WebServer {
         }
     }
 
-    private void sendGroupJoined(String address, GroupInfo info, List<String> coords) {
+    private void sendGroupJoined(String usernameOrAddress, GroupInfo info, List<String> coords) {
+        String address = usernameOrAddress;
+        String targetUsername = usernameOrAddress;
+        if (!address.contains(":")) {
+            PeerInfo p = peerManager.getPeer(usernameOrAddress);
+            if (p != null) address = p.getAddress();
+            else address = peerManager.getRecentPeersCache().getAddress(usernameOrAddress);
+        } else {
+            targetUsername = peerManager.resolveUsername(address);
+        }
+
+        if (address == null || !address.contains(":")) return;
         String[] parts = address.split(":");
         if (parts.length != 2) return;
         
         Message joined = Message.builder()
                 .type(MessageType.GROUP_JOINED.name())
                 .messageId(ProtocolHandler.generateMessageId())
-                .sender(peerManager.getLocalAddress())
+                .sender(peerManager.getLocalUsername())
                 .groupId(info.getGroupId())
                 .groupName(info.getGroupName())
                 .members(new ArrayList<>(info.getMembers()))
@@ -744,7 +755,6 @@ public class WebServer {
         }
         
         if (!tcpSent) {
-            String targetUsername = peerManager.resolveUsername(address);
             if (targetUsername != null && !targetUsername.isBlank()) {
                 String payloadJson = new com.google.gson.Gson().toJson(joined);
                 String payloadHash = sha256Hex(payloadJson);
@@ -776,21 +786,20 @@ public class WebServer {
      * từng thành viên còn online qua TCP. Nếu TCP cũng fail (member offline),
      * lưu vào Mailbox — khi member online lại pull mailbox sẽ nhận được.
      */
-    private void broadcastLeaveDirectly(GroupCache.GroupCacheEntry entry,
-                                        String groupId, String leaverAddress) {
-        List<String> newMembers = entry.getMembers().stream()
-                .filter(m -> !m.equals(leaverAddress))
-                .collect(java.util.stream.Collectors.toList());
+    private void broadcastLeaveDirectly(GroupCache.GroupCacheEntry entry, String groupId, String leaverUsername) {
+        if (entry == null || entry.getMembers() == null) return;
+        List<String> newMembers = new java.util.ArrayList<>(entry.getMembers());
+        newMembers.remove(leaverUsername);
 
         Message notify = Message.builder()
-                .type(MessageType.GROUP_LEAVE.name())
+                .type(MessageType.GROUP_UPDATED.name())
                 .messageId(ProtocolHandler.generateMessageId())
-                .sender(leaverAddress)
+                .sender(leaverUsername)
                 .groupId(groupId)
                 .groupName(entry.getGroupName())
-                .members(newMembers)         // danh sách sau khi trừ người rời
+                .members(newMembers)
                 .changeType("LEAVE")
-                .affected(leaverAddress)
+                .affected(leaverUsername)
                 .timestamp(System.currentTimeMillis())
                 .build();
 
@@ -799,9 +808,21 @@ public class WebServer {
         List<String> offlineMembers = new java.util.ArrayList<>();
 
         for (String member : entry.getMembers()) {
-            if (member.equals(leaverAddress)) continue;
-            String[] parts = member.split(":");
-            if (parts.length != 2) continue;
+            if (member.equals(leaverUsername)) continue;
+            
+            PeerInfo p = peerManager.getPeer(member);
+            String address = p != null ? p.getAddress() : peerManager.getRecentPeersCache().getAddress(member);
+            if (address == null || !address.contains(":")) {
+                offlineMembers.add(member);
+                continue;
+            }
+
+            String[] parts = address.split(":");
+            if (parts.length != 2) {
+                offlineMembers.add(member);
+                continue;
+            }
+            
             boolean tcpSent = false;
             try (Socket socket = new Socket()) {
                 socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])),
@@ -816,11 +837,7 @@ public class WebServer {
             }
 
             if (!tcpSent) {
-                // Resolve username để mailbox biết deliver cho ai
-                String username = resolveUsernameFromAddress(member);
-                if (username != null && !username.isBlank()) {
-                    offlineMembers.add(username);
-                }
+                offlineMembers.add(member);
             }
         }
 
@@ -845,11 +862,11 @@ public class WebServer {
      */
     private void storeControlEventToMailbox(GroupCache.GroupCacheEntry entry,
                                             String groupId, String eventType,
-                                            String excludeAddress) {
+                                            String excludeUsername) {
         Message notify = Message.builder()
                 .type(eventType)
                 .messageId(ProtocolHandler.generateMessageId())
-                .sender(peerManager.getLocalAddress())
+                .sender(peerManager.getLocalUsername())
                 .groupId(groupId)
                 .groupName(entry.getGroupName())
                 .timestamp(System.currentTimeMillis())
@@ -860,11 +877,8 @@ public class WebServer {
 
         List<String> targetUsernames = new java.util.ArrayList<>();
         for (String member : entry.getMembers()) {
-            if (member.equals(excludeAddress) || member.equals(peerManager.getLocalAddress())) continue;
-            String username = resolveUsernameFromAddress(member);
-            if (username != null && !username.isBlank()) {
-                targetUsernames.add(username);
-            }
+            if (member.equals(excludeUsername) || member.equals(peerManager.getLocalUsername())) continue;
+            targetUsernames.add(member);
         }
 
         if (!targetUsernames.isEmpty()) {

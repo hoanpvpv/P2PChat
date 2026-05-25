@@ -86,7 +86,7 @@ public class PeerServer {
         processMessage(msg, null);
     }
 
-    private void processMessage(Message msg, Socket socket) {
+    public void processMessage(Message msg, Socket socket) {
         String type = msg.getType();
         logger.fine("Received [" + type + "] from " + msg.getSender());
 
@@ -672,7 +672,7 @@ public class PeerServer {
         // Check HRW eligibility: are we supposed to be a coordinator?
         boolean eligible = HRWHash.isCoordinator(
                 entry.getMembers(), groupId,
-                peerManager.getLocalAddress(), Constants.COORDINATOR_K);
+                peerManager.getLocalUsername(), Constants.COORDINATOR_K);
         if (!eligible) return false;
 
         // Bootstrap GroupInfo from local GroupCache and start managing
@@ -711,12 +711,14 @@ public class PeerServer {
             Message stale = Message.builder()
                     .type(MessageType.CACHE_STALE.name())
                     .messageId(ProtocolHandler.generateMessageId())
-                    .sender(peerManager.getLocalAddress())
+                    .sender(peerManager.getLocalUsername())
                     .groupId(groupId)
                     .cacheVersion(currentVersion)
                     .build();
-            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            out.println(JsonUtil.toJson(stale));
+            if (socket != null) {
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                out.println(JsonUtil.toJson(stale));
+            }
         } catch (IOException e) {
             logger.fine("Failed to send CACHE_STALE: " + e.getMessage());
         }
@@ -725,6 +727,7 @@ public class PeerServer {
     // ─────────────────────── Helpers ───────────────────────
 
     private void sendAck(Message original, Socket socket) {
+        if (socket == null) return;
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message ack = ProtocolHandler.createAck(original.getMessageId(), peerManager.getLocalUsername());
@@ -735,6 +738,7 @@ public class PeerServer {
     }
 
     private void sendRawAck(Socket socket, String originalId, String ackType) {
+        if (socket == null) return;
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message ack = Message.builder()
@@ -750,6 +754,7 @@ public class PeerServer {
     }
 
     private void sendResponse(Socket socket, Message response) {
+        if (socket == null) return;
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             out.println(JsonUtil.toJson(response));
@@ -759,6 +764,7 @@ public class PeerServer {
     }
 
     private void sendError(Socket socket, String error) {
+        if (socket == null) return;
         try {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
             Message err = Message.builder()
