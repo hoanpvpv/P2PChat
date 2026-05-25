@@ -245,7 +245,9 @@ public class WebServer {
         // ── Groups — New DHT-lite API ──
         app.get("/api/group/list", ctx -> {
             List<Map<String, Object>> groups = new ArrayList<>();
-            for (GroupCache.GroupCacheEntry e : peerManager.getGroupCache().getAllEntries()) {
+            // FIX: Only return ACTIVE groups — skip LEAVING entries (e.g. after kick/disband grace window)
+            // so that refreshData() on the client doesn't re-add groups the user was removed from.
+            for (GroupCache.GroupCacheEntry e : peerManager.getGroupCache().getActiveGroups()) {
                 Map<String, Object> g = new HashMap<>();
                 g.put("groupId", e.getGroupId());
                 g.put("groupName", e.getGroupName());
@@ -399,10 +401,53 @@ public class WebServer {
                     .build();
 
             Message response = peerClient.sendToCoordinator(groupId, addMsg);
+
+            // FALLBACK: coordinator offline → tự cập nhật GroupCache local và thông báo
+            // cho các thành viên offline qua mailbox. Người được thêm (đang online) nhận
+            // GROUP_JOINED trực tiếp.
+            if (MessageType.ERROR.name().equals(response.getType())) {
+                logger.warning("Coordinator unreachable for GROUP_ADD " + groupId
+                        + " — applying locally and notifying via mailbox/direct");
+
+                // Build danh sách members mới (thêm người mới vào)
+                List<String> newMembers = new java.util.ArrayList<>(entry.getMembers());
+                if (!newMembers.contains(peer.getAddress())) {
+                    newMembers.add(peer.getAddress());
+                }
+                List<String> coords = HRWHash.topK(newMembers, groupId, Constants.COORDINATOR_K);
+
+                // Cập nhật GroupCache local
+                com.mycompany.p2pchat.model.GroupInfo updatedInfo =
+                        new com.mycompany.p2pchat.model.GroupInfo();
+                updatedInfo.setGroupId(groupId);
+                updatedInfo.setGroupName(entry.getGroupName());
+                updatedInfo.setOwner(entry.getOwner());
+                updatedInfo.setMembers(newMembers);
+                updatedInfo.setVersion(entry.getLocalVersion() + 1);
+                updatedInfo.setGroupMode(entry.getGroupMode());
+                peerManager.getGroupCache().updateFromGroupInfo(updatedInfo);
+
+                // Gửi GROUP_JOINED trực tiếp cho người mới (đang online)
+                sendGroupJoined(peer.getAddress(), updatedInfo, coords);
+                logger.info("[ADD-FALLBACK] Sent GROUP_JOINED directly to " + username);
+
+                // Thông báo cho các thành viên offline qua mailbox
+                storeControlEventToMailbox(
+                        peerManager.getGroupCache().get(groupId),
+                        groupId, MessageType.GROUP_UPDATED.name(),
+                        peer.getAddress()); // exclude người vừa thêm (đã nhận trực tiếp)
+
+                ctx.contentType("application/json").result(gson.toJson(Map.of(
+                        "type", "GROUP_UPDATED_LOCAL",
+                        "members", newMembers)));
+                return;
+            }
+
             ctx.contentType("application/json").result(gson.toJson(Map.of(
                     "type", response.getType(),
                     "members", response.getMembers() != null ? response.getMembers() : List.of())));
         });
+
 
         app.post("/api/group/kick", ctx -> {
             Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
@@ -438,6 +483,8 @@ public class WebServer {
             String newOwner = getString(body, "newOwner");
             if (groupId.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId"))); return; }
 
+            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+
             Message leaveMsg = Message.builder()
                     .type(MessageType.GROUP_LEAVE.name())
                     .messageId(ProtocolHandler.generateMessageId())
@@ -446,15 +493,28 @@ public class WebServer {
                     .newOwner(newOwner.isEmpty() ? null : newOwner)
                     .build();
             Message response = peerClient.sendToCoordinator(groupId, leaveMsg);
+
+            // FALLBACK: nếu coordinator không online → gửi GROUP_LEAVE thẳng đến
+            // toàn bộ thành viên còn lại để họ tự cập nhật GroupCache local.
+            // Không cần coordinator authority — người rời nhóm tự gửi trực tiếp.
+            if (MessageType.ERROR.name().equals(response.getType()) && entry != null) {
+                logger.warning("All coordinators unreachable for leave " + groupId
+                        + " — broadcasting leave directly to members");
+                broadcastLeaveDirectly(entry, groupId, peerManager.getLocalAddress());
+            }
+
             peerManager.getGroupCache().remove(groupId);
             broadcastToWeb("GROUP_DISBANDED", Map.of("groupId", groupId));
             ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
         });
 
+
         app.post("/api/group/disband", ctx -> {
             Map<String, Object> body = gson.fromJson(ctx.body(), Map.class);
             String groupId = getString(body, "groupId");
             if (groupId.isEmpty()) { ctx.status(400).result(gson.toJson(Map.of("error", "Missing groupId"))); return; }
+
+            GroupCache.GroupCacheEntry disbandEntry = peerManager.getGroupCache().get(groupId);
 
             Message disbandMsg = Message.builder()
                     .type(MessageType.GROUP_DISBAND.name())
@@ -463,6 +523,16 @@ public class WebServer {
                     .groupId(groupId)
                     .build();
             Message response = peerClient.sendToCoordinator(groupId, disbandMsg);
+
+            // FALLBACK: coordinator offline → gửi GROUP_DISBANDED qua Mailbox cho mọi thành viên.
+            // Khi họ online lại và pull mailbox, sẽ nhận được thông báo và xóa nhóm khỏi cache.
+            if (MessageType.ERROR.name().equals(response.getType()) && disbandEntry != null) {
+                logger.warning("All coordinators unreachable for disband " + groupId
+                        + " — storing GROUP_DISBANDED in mailbox for all members");
+                storeControlEventToMailbox(disbandEntry, groupId,
+                        MessageType.GROUP_DISBANDED.name(), null);
+            }
+
             peerManager.getGroupCache().remove(groupId);
             broadcastToWeb("GROUP_DISBANDED", Map.of("groupId", groupId));
             ctx.contentType("application/json").result(gson.toJson(Map.of("type", response.getType())));
@@ -671,6 +741,145 @@ public class WebServer {
         map.put("version", info.getVersion());
         map.put("groupMode", info.getGroupMode());
         return map;
+    }
+
+    /**
+     * Fallback khi tất cả coordinator offline: gửi GROUP_LEAVE trực tiếp đến
+     * từng thành viên còn online. Mỗi peer nhận sẽ tự xoá leaverAddress khỏi
+     * GroupCache local và cập nhật UI (handleGroupUpdated → GROUP_UPDATED WS event).
+     *
+     * Đây là "eventual consistency" mức P2P — không có coordinator authority,
+     * nhưng đảm bảo thành viên online thấy được người đã rời nhóm.
+     * Khi coordinator nào đó online lại, gossip/repair sẽ sync lại state chính xác.
+     */
+    /**
+     * Fallback khi tất cả coordinator offline: gửi GROUP_LEAVE trực tiếp đến
+     * từng thành viên còn online qua TCP. Nếu TCP cũng fail (member offline),
+     * lưu vào Mailbox → khi member online lại pull mailbox sẽ nhận được.
+     */
+    private void broadcastLeaveDirectly(GroupCache.GroupCacheEntry entry,
+                                        String groupId, String leaverAddress) {
+        List<String> newMembers = entry.getMembers().stream()
+                .filter(m -> !m.equals(leaverAddress))
+                .collect(java.util.stream.Collectors.toList());
+
+        Message notify = Message.builder()
+                .type(MessageType.GROUP_LEAVE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(leaverAddress)
+                .groupId(groupId)
+                .groupName(entry.getGroupName())
+                .members(newMembers)         // danh sách sau khi trừ người rời
+                .changeType("LEAVE")
+                .affected(leaverAddress)
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        String payloadJson = new com.google.gson.Gson().toJson(notify);
+        String payloadHash = sha256Hex(payloadJson);
+        List<String> offlineMembers = new java.util.ArrayList<>();
+
+        for (String member : entry.getMembers()) {
+            if (member.equals(leaverAddress)) continue;
+            String[] parts = member.split(":");
+            if (parts.length != 2) continue;
+            boolean tcpSent = false;
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])),
+                        Constants.COORDINATOR_TIMEOUT);
+                socket.setSoTimeout(Constants.COORDINATOR_TIMEOUT);
+                PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+                out.println(JsonUtil.toJson(notify));
+                tcpSent = true;
+                logger.info("[LEAVE] Direct TCP notified: " + member);
+            } catch (Exception e) {
+                logger.fine("[LEAVE] TCP fail for " + member + " — will store in mailbox");
+            }
+
+            if (!tcpSent) {
+                // Resolve username để mailbox biết deliver cho ai
+                String username = resolveUsernameFromAddress(member);
+                if (username != null && !username.isBlank()) {
+                    offlineMembers.add(username);
+                }
+            }
+        }
+
+        // Lưu vào Mailbox cho những member không online
+        if (!offlineMembers.isEmpty()) {
+            try {
+                boolean stored = peerClient.getMailboxClient().storeGroup(
+                        notify, payloadJson, payloadHash,
+                        groupId, offlineMembers, entry.getMembers().size());
+                if (stored) {
+                    logger.info("[LEAVE] Stored GROUP_LEAVE in mailbox for offline members: " + offlineMembers);
+                }
+            } catch (Exception e) {
+                logger.warning("[LEAVE] Failed to store GROUP_LEAVE in mailbox: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Lưu một control-plane event (GROUP_DISBANDED, GROUP_KICKED) vào Mailbox
+     * cho tất cả thành viên của nhóm (trừ người gửi).
+     */
+    private void storeControlEventToMailbox(GroupCache.GroupCacheEntry entry,
+                                            String groupId, String eventType,
+                                            String excludeAddress) {
+        Message notify = Message.builder()
+                .type(eventType)
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalAddress())
+                .groupId(groupId)
+                .groupName(entry.getGroupName())
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        String payloadJson = new com.google.gson.Gson().toJson(notify);
+        String payloadHash = sha256Hex(payloadJson);
+
+        List<String> targetUsernames = new java.util.ArrayList<>();
+        for (String member : entry.getMembers()) {
+            if (member.equals(excludeAddress) || member.equals(peerManager.getLocalAddress())) continue;
+            String username = resolveUsernameFromAddress(member);
+            if (username != null && !username.isBlank()) {
+                targetUsernames.add(username);
+            }
+        }
+
+        if (!targetUsernames.isEmpty()) {
+            try {
+                boolean stored = peerClient.getMailboxClient().storeGroup(
+                        notify, payloadJson, payloadHash,
+                        groupId, targetUsernames, entry.getMembers().size());
+                if (stored) {
+                    logger.info("[MAILBOX] Stored " + eventType + " for offline members: " + targetUsernames);
+                }
+            } catch (Exception e) {
+                logger.warning("[MAILBOX] Failed to store " + eventType + ": " + e.getMessage());
+            }
+        }
+    }
+
+    /** Resolve username từ host:port address bằng cách tìm trong known peers. */
+    private String resolveUsernameFromAddress(String address) {
+        for (var p : peerManager.getAllKnownPeers()) {
+            if (address.equals(p.getHost() + ":" + p.getPort())) return p.getUsername();
+        }
+        return null;
+    }
+
+    private String sha256Hex(String value) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hash.length * 2);
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     private String getString(Map<String, Object> body, String key) {

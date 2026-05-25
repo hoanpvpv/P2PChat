@@ -439,7 +439,7 @@ public class PeerServer {
     }
 
     private void handleGroupAdd(Message msg, Socket socket) {
-        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+        if (!selfPromoteIfEligible(msg.getGroupId())) {
             sendError(socket, "Not coordinator for: " + msg.getGroupId());
             return;
         }
@@ -460,7 +460,7 @@ public class PeerServer {
     }
 
     private void handleGroupKick(Message msg, Socket socket) {
-        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+        if (!selfPromoteIfEligible(msg.getGroupId())) {
             sendError(socket, "Not coordinator for: " + msg.getGroupId());
             return;
         }
@@ -477,31 +477,60 @@ public class PeerServer {
     }
 
     private void handleGroupLeave(Message msg, Socket socket) {
-        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
-            sendError(socket, "Not coordinator for: " + msg.getGroupId());
+        // PATH 1: Coordinator path — self-promote if eligible then process normally
+        if (selfPromoteIfEligible(msg.getGroupId())) {
+            Message response = coordinatorManager.handleGroupLeave(msg);
+            sendResponse(socket, response);
+            if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
+                GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
+                if (managed != null) {
+                    peerManager.getGroupCache().updateFromGroupInfo(managed);
+                }
+                processMessageFromLocal(response);
+            }
             return;
         }
-        Message response = coordinatorManager.handleGroupLeave(msg);
-        sendResponse(socket, response);
-        if (MessageType.GROUP_UPDATED.name().equals(response.getType())) {
-            // FIX: Same as handleGroupAdd — sync GroupCache then route through full pipeline.
-            // Note: if the leaver was duc itself, GroupCache.remove() is handled by
-            // handleGroupUpdated via the LEAVE changeType path on the remote side;
-            // locally, CoordinatorManager.handleGroupLeave() calls unmanageGroup() if needed.
-            GroupInfo managed = coordinatorManager.getManagedGroup(msg.getGroupId());
-            if (managed != null) {
-                peerManager.getGroupCache().updateFromGroupInfo(managed);
+
+        // PATH 2: Direct P2P fallback — tất cả coor offline, người rời nhóm gửi thẳng.
+        // Message có kèm members list mới (đã trừ người rời).
+        // Ta update GroupCache local và báo UI, không cần coordinator authority.
+        if (msg.getMembers() != null && !msg.getMembers().isEmpty() && "LEAVE".equals(msg.getChangeType())) {
+            logger.info("[DIRECT-LEAVE] " + msg.getSender() + " left group " + msg.getGroupId()
+                    + " (coordinator-less fallback)");
+            GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(msg.getGroupId());
+            if (entry != null) {
+                GroupInfo updated = new GroupInfo();
+                updated.setGroupId(msg.getGroupId());
+                updated.setGroupName(msg.getGroupName() != null ? msg.getGroupName() : entry.getGroupName());
+                updated.setOwner(entry.getOwner());
+                updated.setMembers(new ArrayList<>(msg.getMembers())); // danh sách đã trừ người rời
+                updated.setVersion(entry.getLocalVersion() + 1);
+                updated.setGroupMode(entry.getGroupMode());
+                peerManager.getGroupCache().updateFromGroupInfo(updated);
+
+                // Báo UI cập nhật danh sách thành viên
+                broadcastWs("GROUP_UPDATED", groupInfoToMap(updated, "LEAVE", msg.getSender()));
+                logger.info("[DIRECT-LEAVE] GroupCache updated: removed " + msg.getSender());
             }
-            processMessageFromLocal(response);
+            sendAck(msg, socket);
+            return;
         }
+
+        // Không đủ điều kiện xử lý → gửi lỗi
+        sendError(socket, "Not coordinator for: " + msg.getGroupId());
     }
 
+
     private void handleGroupDisband(Message msg, Socket socket) {
-        if (coordinatorManager == null || !coordinatorManager.isManaging(msg.getGroupId())) {
+        if (!selfPromoteIfEligible(msg.getGroupId())) {
             sendError(socket, "Not coordinator for: " + msg.getGroupId());
             return;
         }
         coordinatorManager.handleGroupDisband(msg);
+        // FIX: Also remove from local GroupCache — coordinatorManager.handleGroupDisband() only
+        // calls unmanageGroup() which removes from managedGroups, but GroupCache still holds
+        // an ACTIVE entry. Without this, after disband the owner's refreshData() re-adds the group.
+        peerManager.getGroupCache().remove(msg.getGroupId());
         broadcastWs("GROUP_DISBANDED", Map.of("groupId", msg.getGroupId()));
     }
 
@@ -613,6 +642,47 @@ public class PeerServer {
         if (repair != null) {
             threadPool.execute(() -> repair.repair(groupId));
         }
+    }
+
+    /**
+     * Self-promote to coordinator for groupId if:
+     *   1. We are not yet managing it (isManaging == false), AND
+     *   2. We ARE eligible by HRW rank (in topK coordinators), AND
+     *   3. We have the group data in our local GroupCache.
+     *
+     * This handles the "coordinator C1 died before gossiping to C2" scenario:
+     * instead of returning an error, C2 bootstraps its managed-group state
+     * from its own (already up-to-date) GroupCache and serves the request.
+     *
+     * @return true if we are now (or already were) managing the group.
+     */
+    private boolean selfPromoteIfEligible(String groupId) {
+        if (coordinatorManager == null) return false;
+        if (coordinatorManager.isManaging(groupId)) return true;
+
+        GroupCache.GroupCacheEntry entry = peerManager.getGroupCache().get(groupId);
+        if (entry == null || entry.getMembers() == null || entry.getMembers().isEmpty()) {
+            return false; // no local data to bootstrap from
+        }
+
+        // Check HRW eligibility: are we supposed to be a coordinator?
+        boolean eligible = HRWHash.isCoordinator(
+                entry.getMembers(), groupId,
+                peerManager.getLocalAddress(), Constants.COORDINATOR_K);
+        if (!eligible) return false;
+
+        // Bootstrap GroupInfo from local GroupCache and start managing
+        com.mycompany.p2pchat.model.GroupInfo info = new com.mycompany.p2pchat.model.GroupInfo();
+        info.setGroupId(groupId);
+        info.setGroupName(entry.getGroupName());
+        info.setOwner(entry.getOwner());
+        info.setMembers(new java.util.ArrayList<>(entry.getMembers()));
+        info.setVersion(entry.getLocalVersion());
+        info.setGroupMode(entry.getGroupMode());
+        coordinatorManager.manageGroup(info);
+        logger.info("[SELF-PROMOTE] Became coordinator for " + groupId
+                + " v=" + entry.getLocalVersion() + " (primary coordinator likely offline)");
+        return true;
     }
 
     private void handleGroupGet(Message msg, Socket socket) {

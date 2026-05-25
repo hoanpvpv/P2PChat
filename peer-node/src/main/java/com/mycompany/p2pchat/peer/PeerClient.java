@@ -44,6 +44,9 @@ public class PeerClient {
         this.e2eeCrypto = E2EECrypto.loadOrCreate();
     }
 
+    /** Expose MailboxClient so WebServer can store control-plane events directly. */
+    public MailboxClient getMailboxClient() { return mailboxClient; }
+
     // ==================== Direct Message ====================
 
     public boolean sendDirectMessage(String sender, String receiver, String content) {
@@ -221,12 +224,17 @@ public class PeerClient {
         var server = peerManager.getPeerServer();
         if (server == null) return;
         try {
-            if (MessageType.GROUP_MESSAGE.name().equals(message.getType())) {
-                server.broadcastIncoming("GROUP_MESSAGE", message);
-            } else if (MessageType.DIRECT_MESSAGE.name().equals(message.getType())) {
-                server.broadcastIncoming("DIRECT_MESSAGE", message);
-            } else if (MessageType.BROADCAST.name().equals(message.getType())) {
-                server.broadcastIncoming("BROADCAST", message);
+            switch (message.getType()) {
+                case "GROUP_MESSAGE"  -> server.broadcastIncoming("GROUP_MESSAGE", message);
+                case "DIRECT_MESSAGE" -> server.broadcastIncoming("DIRECT_MESSAGE", message);
+                case "BROADCAST"      -> server.broadcastIncoming("BROADCAST", message);
+                // Control-plane events stored via mailbox when coordinator/members were offline.
+                // Route through processMessageFromLocal so PeerServer updates GroupCache + notifies UI.
+                case "GROUP_LEAVE",
+                     "GROUP_DISBANDED",
+                     "GROUP_KICKED",
+                     "GROUP_UPDATED",
+                     "GROUP_JOINED"   -> server.processMessageFromLocal(message);
             }
         } catch (Exception ignored) {}
     }
@@ -334,6 +342,8 @@ public class PeerClient {
 
     /**
      * Send a request to coordinator C1→C2→C3 with hard cancel + idempotency.
+     * If we are in the coordinator list but not yet managing (C1 died before gossiping),
+     * we self-promote from our local GroupCache and handle the request locally.
      */
     public Message sendToCoordinator(String groupId, Message request) {
         GroupCache.GroupCacheEntry cache = peerManager.getGroupCache().get(groupId);
@@ -349,30 +359,40 @@ public class PeerClient {
         List<String> coords = cache.getCoordinators();
         for (String coord : coords) {
             if (coord.equals(peerManager.getLocalAddress())) {
-                // Process locally if we are a coordinator
-                if (peerManager.getCoordinatorManager().isManaging(groupId)) {
-                    Message resp = null;
-                    try {
-                        switch (com.mycompany.p2pchat.protocol.MessageType.valueOf(request.getType())) {
-                            case GROUP_ADD -> resp = peerManager.getCoordinatorManager().handleGroupAdd(request);
-                            case GROUP_KICK -> resp = peerManager.getCoordinatorManager().handleGroupKick(request);
-                            case GROUP_LEAVE -> resp = peerManager.getCoordinatorManager().handleGroupLeave(request);
-                            case GROUP_DISBAND -> {
-                                peerManager.getCoordinatorManager().handleGroupDisband(request);
-                                resp = Message.builder().type(com.mycompany.p2pchat.protocol.MessageType.GROUP_DISBANDED.name()).build();
-                            }
+                // We are a coordinator by HRW — ensure we are managing.
+                // If not (C1 died before gossiping us), self-promote from GroupCache.
+                if (!peerManager.getCoordinatorManager().isManaging(groupId)) {
+                    com.mycompany.p2pchat.model.GroupInfo info = new com.mycompany.p2pchat.model.GroupInfo();
+                    info.setGroupId(groupId);
+                    info.setGroupName(cache.getGroupName());
+                    info.setOwner(cache.getOwner());
+                    info.setMembers(new java.util.ArrayList<>(cache.getMembers()));
+                    info.setVersion(cache.getLocalVersion());
+                    info.setGroupMode(cache.getGroupMode());
+                    peerManager.getCoordinatorManager().manageGroup(info);
+                    logger.info("[SELF-PROMOTE] sendToCoordinator: became coordinator for "
+                            + groupId + " v=" + cache.getLocalVersion());
+                }
+
+                Message resp = null;
+                try {
+                    switch (com.mycompany.p2pchat.protocol.MessageType.valueOf(request.getType())) {
+                        case GROUP_ADD     -> resp = peerManager.getCoordinatorManager().handleGroupAdd(request);
+                        case GROUP_KICK    -> resp = peerManager.getCoordinatorManager().handleGroupKick(request);
+                        case GROUP_LEAVE   -> resp = peerManager.getCoordinatorManager().handleGroupLeave(request);
+                        case GROUP_DISBAND -> {
+                            peerManager.getCoordinatorManager().handleGroupDisband(request);
+                            resp = Message.builder().type(com.mycompany.p2pchat.protocol.MessageType.GROUP_DISBANDED.name()).build();
                         }
-                        if (resp != null) {
-                            // Synthesize GROUP_UPDATED processing locally to generate SYSTEM messages
-                            if (com.mycompany.p2pchat.protocol.MessageType.GROUP_UPDATED.name().equals(resp.getType())) {
-                                // Simulate receiving GROUP_UPDATED so PeerServer generates WS and SYSTEM message
-                                peerManager.getPeerServer().processMessageFromLocal(resp);
-                            }
-                            return resp;
-                        }
-                    } catch (Exception e) {
-                        logger.warning("Error processing locally: " + e.getMessage());
                     }
+                    if (resp != null) {
+                        if (com.mycompany.p2pchat.protocol.MessageType.GROUP_UPDATED.name().equals(resp.getType())) {
+                            peerManager.getPeerServer().processMessageFromLocal(resp);
+                        }
+                        return resp;
+                    }
+                } catch (Exception e) {
+                    logger.warning("Error processing locally: " + e.getMessage());
                 }
                 continue;
             }

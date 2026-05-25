@@ -35,6 +35,14 @@ public class CoordinatorManager {
     private WebServer webServer;
     private volatile boolean running = false;
 
+    /**
+     * Pending control-plane operations that failed because all coordinators
+     * were offline. Retried on every gossip cycle until successful.
+     */
+    private final java.util.Queue<PendingControlOp> pendingOps = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    public record PendingControlOp(Message request, List<String> coordinators, long enqueuedAt) {}
+
     public CoordinatorManager(String myAddress, PeerManager peerManager) {
         this.myAddress = myAddress;
         this.peerManager = peerManager;
@@ -46,7 +54,7 @@ public class CoordinatorManager {
 
     public void start() {
         running = true;
-        gossipScheduler.scheduleAtFixedRate(this::gossipAll, 
+        gossipScheduler.scheduleAtFixedRate(this::gossipAll,
             Constants.GOSSIP_INTERVAL, Constants.GOSSIP_INTERVAL, TimeUnit.MILLISECONDS);
         logger.info("CoordinatorManager started for " + myAddress);
     }
