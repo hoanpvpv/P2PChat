@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -71,6 +71,52 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   let lastDate = null;
+  const [expandedState, setExpandedState] = useState(null);
+
+  const renderMessageContent = (msg, isSent) => {
+    let isRich = false;
+    let text = msg.content;
+    let images = [];
+    
+    try {
+      const parsed = JSON.parse(msg.content);
+      if (parsed && parsed.__rich__) {
+        isRich = true;
+        text = parsed.text;
+        images = parsed.images || [];
+      }
+    } catch (e) {
+      // not JSON, fallback to plain text
+    }
+
+    if (!isRich || images.length === 0) {
+      return <div className="message-content">{text}</div>;
+    }
+
+    return (
+      <div className="rich-message-content">
+        <div className={`message-images grid-${Math.min(images.length, 3)}`}>
+          {images.slice(0, 3).map((imgUrl, idx) => {
+            const isLastVisible = idx === 2;
+            const remaining = images.length - 3;
+            return (
+              <div 
+                key={idx} 
+                className="message-image-wrapper"
+                onClick={() => setExpandedState({ images, index: idx })}
+              >
+                <img src={imgUrl} alt={`attached-${idx}`} />
+                {isLastVisible && remaining > 0 && (
+                  <div className="image-overlay">+{remaining}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {text && <div className="message-text">{text}</div>}
+      </div>
+    );
+  };
 
   return (
     <div className="chat-area">
@@ -107,7 +153,7 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
                 )}
                 <div id={`msg-${msg.messageId}`} className={`message broadcast ${isSent ? 'broadcast-sent' : 'broadcast-received'}`}>
                   {!isSent && <div className="message-sender">{msg.sender}</div>}
-                  <div className="message-content">{msg.content}</div>
+                  {renderMessageContent(msg, isSent)}
                   <div className="message-time">{formatTime(msg.timestamp)}</div>
                 </div>
               </div>
@@ -188,9 +234,7 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
                           }
                         })()}
                       </div>
-                    ) : (
-                      <div className="message-content">{msg.content}</div>
-                    )}
+                    ) : renderMessageContent(msg, isSent)}
                     <div className="message-time">
                       {formatTime(msg.timestamp)}
                       {isSent && msg.deliveryState && (
@@ -207,6 +251,52 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
         );
       })}
       <div ref={messagesEndRef} />
+      {expandedState && (
+        <div className="image-lightbox">
+          <div className="lightbox-close" onClick={() => setExpandedState(null)}>&times;</div>
+          
+          <button 
+            className="lightbox-nav lightbox-prev" 
+            disabled={expandedState.index === 0}
+            onClick={() => setExpandedState(prev => ({ ...prev, index: prev.index - 1 }))}
+          >
+            &#10094;
+          </button>
+          
+          <div className="lightbox-content">
+            <div className="lightbox-main">
+              <img src={expandedState.images[expandedState.index]} alt={`expanded-main`} />
+              <a href={expandedState.images[expandedState.index]} download={`image-${expandedState.index}.png`} className="lightbox-download" title="Download Image">
+                <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+              </a>
+            </div>
+            
+            <div className="lightbox-thumbnails">
+              {expandedState.images.map((img, i) => (
+                <div 
+                  key={i} 
+                  className={`lightbox-thumbnail ${i === expandedState.index ? 'active' : ''}`}
+                  onClick={() => setExpandedState(prev => ({ ...prev, index: i }))}
+                >
+                  <img src={img} alt={`thumb-${i}`} />
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <button 
+            className="lightbox-nav lightbox-next" 
+            disabled={expandedState.index === expandedState.images.length - 1}
+            onClick={() => setExpandedState(prev => ({ ...prev, index: prev.index + 1 }))}
+          >
+            &#10095;
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -45,6 +45,7 @@ public class WebServer {
     public void start() {
         app = Javalin.create(config -> {
             config.staticFiles.add("/static", Location.CLASSPATH);
+            config.http.maxRequestSize = 524_288_000L; // 500 MB limit for all HTTP requests
         });
 
         app.exception(Exception.class, (e, ctx) -> {
