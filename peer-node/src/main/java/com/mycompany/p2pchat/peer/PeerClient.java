@@ -273,14 +273,21 @@ public class PeerClient {
                 .build();
 
         peerManager.getMessageRepository().saveMessage(message);
+        if (peerManager.getPeerServer() != null) {
+            peerManager.getPeerServer().broadcastIncoming("GROUP_MESSAGE", message);
+        }
 
         boolean allSent = true;
-        String myAddress = peerManager.getLocalAddress();
+        String myUsername = peerManager.getLocalUsername();
         java.util.List<String> missedMemberUsernames = new java.util.ArrayList<>();
         boolean needsRepair = false;
-        for (String memberAddress : cache.getMembers()) {
-            if (memberAddress.equals(myAddress)) continue;
-            String targetAddress = resolveCurrentAddress(memberAddress);
+        for (String memberUsername : cache.getMembers()) {
+            if (memberUsername.equals(myUsername)) continue;
+            String targetAddress = resolveCurrentAddress(memberUsername);
+            if (targetAddress == null || !targetAddress.contains(":")) {
+                missedMemberUsernames.add(memberUsername);
+                continue;
+            }
             String[] parts = targetAddress.split(":");
             if (parts.length != 2) continue;
             String memberHost = parts[0];
@@ -294,7 +301,6 @@ public class PeerClient {
 
             if (!delivered) {
                 allSent = false;
-                String memberUsername = resolveUsernameFromAddress(memberAddress);
                 if (memberUsername != null && !memberUsername.isBlank()) {
                     missedMemberUsernames.add(memberUsername);
                 }
@@ -334,14 +340,21 @@ public class PeerClient {
         return null;
     }
 
-    private String resolveCurrentAddress(String cachedAddress) {
-        String username = resolveUsernameFromAddress(cachedAddress);
-        if (username == null || username.isBlank()) return cachedAddress;
-        PeerInfo current = peerManager.getPeer(username);
-        if (current != null && current.isOnline() && current.getHost() != null && current.getPort() > 0) {
-            return current.getAddress();
+    private String resolveCurrentAddress(String usernameOrAddress) {
+        if (usernameOrAddress == null) return null;
+        if (!usernameOrAddress.contains(":")) {
+            PeerInfo p = peerManager.getPeer(usernameOrAddress);
+            if (p != null) return p.getAddress();
+            return peerManager.getRecentPeersCache().getAddress(usernameOrAddress);
+        } else {
+            String username = resolveUsernameFromAddress(usernameOrAddress);
+            if (username == null || username.isBlank()) return usernameOrAddress;
+            PeerInfo current = peerManager.getPeer(username);
+            if (current != null && current.isOnline() && current.getHost() != null && current.getPort() > 0) {
+                return current.getAddress();
+            }
+            return usernameOrAddress;
         }
-        return cachedAddress;
     }
 
     // ==================== Coordinator Requests with Fallback ====================
@@ -362,7 +375,7 @@ public class PeerClient {
 
         List<String> coords = cache.getCoordinators();
         for (String coord : coords) {
-            if (coord.equals(peerManager.getLocalAddress())) {
+            if (coord.equals(peerManager.getLocalUsername())) {
                 // Process locally if we are a coordinator
                 if (peerManager.getCoordinatorManager().isManaging(groupId)) {
                     Message resp = null;
@@ -390,7 +403,9 @@ public class PeerClient {
                 }
                 continue;
             }
-            String[] parts = coord.split(":");
+            String coordAddress = resolveCurrentAddress(coord);
+            if (coordAddress == null || !coordAddress.contains(":")) continue;
+            String[] parts = coordAddress.split(":");
             if (parts.length != 2) continue;
             try (Socket socket = new Socket()) {
                 socket.connect(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])), Constants.COORDINATOR_TIMEOUT);
