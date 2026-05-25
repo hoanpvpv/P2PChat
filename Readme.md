@@ -4,179 +4,75 @@ P2PChat là hệ thống chat peer-to-peer viết bằng Java 17, có Web UI Rea
 
 Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstrap server chỉ giữ vai trò discovery/registry và điều phối endpoint mailbox; dữ liệu offline được tách sang `mailbox-server`.
 
-## Hướng dẫn sử dụng nhanh
+## Hướng dẫn kết nối qua mạng Internet (Dùng Tailscale)
 
-### Luồng chuẩn cho máy remote sau khi pull code mới
+Hệ thống P2PChat yêu cầu các máy tính (Peers) phải có thể giao tiếp trực tiếp (direct-reachable) với nhau qua TCP. Khi các máy ở các mạng nội bộ (LAN/WiFi) khác nhau, chúng ta cần một mạng riêng ảo (VPN) để kết nối chúng. **Tailscale** là giải pháp dễ dàng và tối ưu nhất cho việc này.
 
-Trên máy của Hoàng hoặc bất kỳ máy remote nào:
+### Bước 1: Cài đặt và thiết lập mạng Tailscale
 
+1. **Cài đặt Tailscale:**
+   - Yêu cầu tất cả người dùng tải và cài đặt Tailscale từ trang chủ: [https://tailscale.com/download](https://tailscale.com/download).
+   - Mở ứng dụng và đăng nhập.
+
+2. **Thiết lập Mạng lưới (Tailnet):**
+   - Sẽ có **một người làm Quản trị mạng (Tạo Tailnet)**. Người này đăng nhập vào [Tailscale Admin Console](https://login.tailscale.com/admin/users).
+   - Tại tab **Users**, chọn **Invite Users** và nhập email của những người bạn muốn mời tham gia mạng chat (Node Khác).
+   - Những người được mời cần kiểm tra email, bấm chấp nhận lời mời và đăng nhập vào Tailscale.
+   - *Lưu ý quan trọng:* KHÔNG dùng tính năng "Share machine". Hãy mời người dùng gia nhập vào cùng một Tailnet (mạng) để đảm bảo tất cả mọi người đều có thể thấy nhau (rất quan trọng khi chat nhóm 3+ người).
+
+3. **Lấy địa chỉ IP Tailscale:**
+   - Sau khi kết nối thành công, mỗi người chạy lệnh sau trong Terminal/Command Prompt để lấy IP của mình:
+     ```bash
+     tailscale ip -4
+     ```
+   - Ví dụ bạn sẽ nhận được một địa chỉ như: `100.100.x.y`.
+
+4. **Kiểm tra thông mạng:**
+   - Trên Node Tham Gia, thử ping đến Node Khởi Tạo Mạng: `ping <IP_Tailscale_Node_Khoi_Tao>`
+   - Đảm bảo có tín hiệu trả về.
+
+### Bước 2: Tải và Khởi chạy Dự án
+
+Đảm bảo bạn đã cài đặt Docker và Git trên máy tính.
+
+Trên tất cả các máy tính (cả Node Khởi Tạo và Node Tham Gia), mở Terminal và chạy lệnh sau:
 ```bash
-git pull
+git clone https://github.com/hoanpvpv/P2PChat.git
+cd P2PChat
 ./run.sh build
 ./run.sh launcher
 ```
 
-Mở:
+Lúc này, Launcher UI (Giao diện cấu hình ban đầu) sẽ mở tại địa chỉ: **`http://localhost:9200`**
 
-```text
-http://localhost:9200
-```
+### Bước 3: Cấu hình và Đăng nhập
 
-Nhập lại đúng username đang dùng, ví dụ `vhoang`. Nếu container cũ đã tồn tại, launcher sẽ recreate container bằng image mới nhưng vẫn giữ dữ liệu trong `data/peers/<username>`.
+Sẽ có 2 vai trò cấu hình khác nhau tùy thuộc vào việc bạn là Node Khởi Tạo (chạy Bootstrap & Mailbox) hay Node Tham Gia (chỉ kết nối P2P):
 
-Form cho máy remote:
+#### Vai trò 1: Node Khởi Tạo (Bootstrap/Mailbox Node)
+Người thiết lập mạng sẽ làm Node Khởi Tạo.
+Tại giao diện `http://localhost:9200`, nhập như sau:
+- **Username**: `ten_cua_ban`
+- **IP máy này**: `Nhập IP Tailscale của bạn (ví dụ: 100.100.x.y)`
+- **Bootstrap server**: *(Để trống)*
+- **Mailbox server**: *(Để trống)*
+- **Web port**: *(Để trống để tự động chọn)*
 
-```text
-Username: vhoang
-IP máy này: để trống
-Bootstrap server: <IP_Tailscale_may_host>:9000
-Mailbox server: để trống
-Web port: để trống
-```
+Bấm **Register and start peer**. Hệ thống sẽ tự động khởi tạo Bootstrap Server, Mailbox Server, và Peer Chat của bạn. Bấm vào link `http://localhost:<port>` hiện ra để vào ứng dụng Chat.
 
-Sau khi tạo xong, kiểm tra direct-reachable từ hai chiều:
+#### Vai trò 2: Node Tham Gia (Peer Node)
+Tại giao diện `http://localhost:9200`, nhập như sau:
+- **Username**: `ten_cua_ban`
+- **IP máy này**: *(Để trống - hệ thống sẽ tự động phát hiện IP Tailscale của bạn)*
+- **Bootstrap server**: `Nhập IP Tailscale của Node Khởi Tạo:9000` (ví dụ: `100.100.x.y:9000`)
+- **Mailbox server**: *(Để trống - hệ thống sẽ tự hỏi Bootstrap)*
+- **Web port**: *(Để trống để tự động chọn)*
 
-```bash
-./run.sh doctor <IP_Tailscale_may_host> 34143
-```
+Bấm **Register and start peer**. Sau đó bấm vào link hiện ra để vào ứng dụng Chat.
 
-Trên máy host cũng kiểm tra ngược lại:
-
-```bash
-./run.sh doctor <IP_Tailscale_may_remote> <peer_port_remote>
-```
-
-Direct chỉ hoạt động khi `nc ... succeeded`. Nếu `doctor` báo timeout thì app sẽ fallback mailbox vì peer online với bootstrap nhưng TCP peer port chưa reachable. Với group chat, tạo nhóm/thêm member/kick đều yêu cầu peer đích direct-reachable; nếu không, UI sẽ báo lỗi thay vì tạo nhóm lệch trạng thái.
-
-### 1. Chuẩn bị mạng
-
-Cả hai máy cần cùng version project và đã cài Docker. Nếu hai máy không cùng LAN/WiFi, dùng Tailscale để lấy IP riêng của từng máy.
-
-Cả hai máy phải nằm trong cùng Tailscale tailnet. Với chat nhóm 3 người trở lên, không dùng `Share machine` thay cho việc mời member thật:
-
-- Nếu tự test bằng nhiều thiết bị của bạn: đăng nhập cùng tài khoản Tailscale trên các thiết bị.
-- Nếu bạn bè dùng tài khoản riêng: mời email của bạn ấy vào tailnet tại `https://login.tailscale.com/admin/users`, role `Member`, sau đó admin approve nếu Tailscale yêu cầu.
-- `Share machine` chỉ cho người được share truy cập máy host. Hai người được share riêng lẻ có thể không thấy nhau, nên group chat/kick/add member dễ lỗi hoặc delay vì control-plane của nhóm cần các peer direct-reachable với nhau.
-- Sau khi tham gia Tailscale, mỗi người chạy `tailscale ip -4` để lấy IP máy của mình.
-
-Kiểm tra đã đúng tailnet member thật:
-
-```bash
-tailscale status
-```
-
-Trên máy host phải thấy đủ các máy bạn bè, ví dụ:
-
-```text
-100.120.26.95    hoanpvpv-precision-5550  hoanyugi1@             linux    -
-100.81.55.92     ducgd                    pvduc919@              windows  -
-100.107.107.126  nguyenhoang              nguyenvanhoang272004@  windows  -
-```
-
-Nếu chỉ thấy máy mình, hoặc trên máy bạn chỉ thấy host mà không thấy người thứ ba, thì chưa đủ điều kiện test group P2P.
-
-Kiểm tra từ máy bạn bè tới máy host:
-
-```bash
-ping <IP_Tailscale_may_host>
-nc -vz <IP_Tailscale_may_host> 9000
-```
-
-Ví dụ:
-
-```bash
-ping 100.64.1.10
-nc -vz 100.64.1.10 9000
-```
-
-Nếu `nc` báo `succeeded` thì máy bạn bè kết nối được tới bootstrap.
-
-### 2. Build project
-
-Ví dụ:
-
-```text
-Máy host: 100.64.1.10
-Máy bạn: 100.64.1.20
-```
-
-Build image trên mỗi máy:
-
-```bash
-./run.sh build
-```
-
-### 3. Máy host tạo mạng chat
-
-Trên máy sẽ chạy bootstrap + mailbox:
-
-```bash
-./run.sh launcher
-```
-
-Mở:
-
-```text
-http://localhost:9200
-```
-
-Nhập form:
-
-```text
-Username: you
-IP máy này: 100.64.1.10
-Bootstrap server: để trống
-Mailbox server: để trống
-Web port: để trống
-```
-
-Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
-
-### 4. Máy còn lại tham gia
-
-Trên máy bạn bè:
-
-```bash
-./run.sh launcher
-```
-
-Mở:
-
-```text
-http://localhost:9200
-```
-
-Nhập form:
-
-```text
-Username: friend
-IP máy này: để trống
-Bootstrap server: 100.64.1.10:9000
-Mailbox server: để trống
-Web port: để trống
-```
-
-Sau khi bấm `Register and start peer`, mở link Web UI mà launcher hiện ra.
-
-Nếu đã từng tạo peer và lỡ tắt tab trình duyệt, chỉ cần chạy lại:
-
-```bash
-./run.sh launcher
-```
-
-Mở `http://localhost:9200`, bấm `Open` ở phần `Continue` để vào lại đúng peer. Nếu container peer đang stopped, nút đó sẽ là `Start`.
-
-### 5. Chat
-
-Trong Web UI, bấm refresh/discover nếu chưa thấy peer, chọn tên peer còn lại rồi nhắn tin.
-
-Ghi nhớ:
-
-- `IP máy này` là tùy chọn nâng cao. Máy tham gia nên để trống; launcher sẽ tự detect IP dùng để kết nối tới bootstrap.
-- Máy host nên nhập `IP máy này` nếu muốn tự chạy bootstrap/mailbox cho máy khác truy cập.
-- Máy host để trống `Bootstrap server`.
-- Máy tham gia nhập `Bootstrap server` là `IP máy host:9000`.
-- `Web port` có thể để trống để launcher tự chọn.
+---
+**💡 Mẹo nhỏ:**
+Nếu bạn vô tình đóng trình duyệt, không cần phải cấu hình lại! Chỉ cần chạy lại `./run.sh launcher`, truy cập `http://localhost:9200` và bấm nút **Open** ở mục "Continue with existing peer" để mở lại cửa sổ chat của bạn.
 
 ## Kiến trúc
 
@@ -448,88 +344,33 @@ Nếu không truyền web port, script tự chọn port ngẫu nhiên, riêng `a
 ./run.sh restart            # Stop rồi start lại stack mặc định
 ```
 
-### Chạy 2 máy không cùng LAN/WiFi
+### Tạo mạng và tham gia bằng Command Line (Dành cho Advanced Users)
 
-Khuyến nghị dùng Tailscale hoặc ZeroTier để mỗi máy có một IP riêng có thể truy cập lẫn nhau. Ví dụ:
+Nếu không muốn dùng giao diện Launcher (port 9200), bạn có thể chạy bằng CLI:
 
-```text
-Máy bạn:      100.64.1.10
-Máy bạn bạn: 100.64.1.20
-```
-
-Máy bạn làm bootstrap + mailbox bằng giao diện:
-
+**1. Khởi tạo hạ tầng (Node Khởi Tạo):**
 ```bash
 ./run.sh build
-./run.sh launcher
+./run.sh infra <IP_Tailscale_node_khoi_tao>
+# Khởi động Bootstrap + Mailbox
 ```
 
-Mở `http://localhost:9200`, nhập:
-
-```text
-Username: you
-IP máy này: 100.64.1.10
-Bootstrap server: để trống
-Mailbox server: để trống
-Web port: 33143
-```
-
-Máy bạn bạn tham gia bằng giao diện:
-
+**2. Tạo Peer cho Node Khởi Tạo:**
 ```bash
-./run.sh build
-./run.sh launcher
+./run.sh join <ten_node_khoi_tao> <IP_Tailscale_node_khoi_tao> <IP_Tailscale_node_khoi_tao>:9000 33143
 ```
 
-Mở `http://localhost:9200`, nhập:
-
-```text
-Username: friend
-IP máy này: để trống
-Bootstrap server: 100.64.1.10:9000
-Mailbox server: để trống
-Web port: 33144
-```
-
-Tóm tắt cho người bạn muốn tham gia:
-
+**3. Tạo Peer cho Node Tham Gia (gia nhập vào mạng):**
 ```bash
-cd P2PChat
-./run.sh build
-./run.sh launcher
+./run.sh join <ten_node_tham_gia> <IP_Tailscale_node_tham_gia> <IP_Tailscale_node_khoi_tao>:9000 33144
 ```
 
-Sau đó mở `http://localhost:9200` và nhập:
+*Cú pháp:* `./run.sh join <username> <ip_chạy_peer> <ip_bootstrap:port> <web_port>`
+*Lưu ý:* `ip_chạy_peer` phải là IP mà máy khác có thể truy cập được (như IP Tailscale), không dùng tên Docker Container (như `peer-alice`) nếu chạy 2 máy khác mạng.
 
-```text
-Username: tên của bạn ấy
-IP máy này: để trống
-Bootstrap server: IP Tailscale máy chủ:9000
-Mailbox server: để trống
-Web port: để trống
-```
+### Thông tin mạng bổ sung
 
-Sau khi bấm `Register and start peer`, launcher sẽ hiện link Web UI dạng `http://localhost:<port>`. Bạn ấy bấm link đó để vào ứng dụng chat.
-
-Cách command tương đương nếu cần:
-
-```bash
-./run.sh build
-./run.sh infra 100.64.1.10
-./run.sh join you 100.64.1.10 100.64.1.10:9000 33143
-./run.sh join friend 100.64.1.20 100.64.1.10:9000 33144
-```
-
-Sau đó mỗi người mở Web UI local của mình:
-
-```text
-Máy bạn:      http://localhost:33143
-Máy bạn bạn: http://localhost:33144
-```
-
-Điểm quan trọng: tham số thứ hai của `join` là IP/hostname mà máy còn lại truy cập được tới peer đó. Không dùng tên Docker container cho trường hợp khác mạng.
-
-Các port cần thông được qua VPN/firewall:
+Các port cần thông được qua VPN/firewall (nếu tự thiết lập thủ công):
 
 | Port | Vai trò |
 |---:|---|
@@ -768,15 +609,5 @@ docker run -d --name peer-alice --network p2p-net \
 | File transfer lỗi | Chưa expose file port hoặc peer không reachable | Mở port `peerPort + 1000` và kiểm tra host quảng bá. |
 | Docker build chậm | Lần đầu tải dependency Maven/npm | Bình thường, chờ build hoàn tất. |
 
-## Tài liệu liên quan
-
-- `Bootstrap-server.md`
-- `Store-and-forward-mailbox-design.md`
-- `Workflow_P2PChat.md`
-- `Suggestion_P2Pmessaging.md`
-- `P2PChat_issues_to_fix.md`
-- `WORKLOG.md`
-
 ## Tác giả
-
-Đồ án môn Hệ thống Phân tán.
+Nhóm 13 - Lớp 01 - Các hệ thống phân tán
