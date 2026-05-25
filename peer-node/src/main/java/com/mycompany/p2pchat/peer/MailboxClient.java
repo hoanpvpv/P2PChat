@@ -87,7 +87,12 @@ public class MailboxClient {
         if (MessageType.ERROR.name().equals(response.getType())) {
             throw new IOException(response.getContent());
         }
-        return MessageType.STORE_ACK.name().equals(response.getType());
+        boolean success = MessageType.STORE_ACK.name().equals(response.getType());
+        if (success) {
+            System.out.printf("%n[MAILBOX] Stored group event %s for %d offline members%n> ", 
+                message.getMessageId(), missedMembers.size());
+        }
+        return success;
     }
 
     public boolean store(Message message, String payloadJson, String payloadHash) throws IOException {
@@ -127,7 +132,12 @@ public class MailboxClient {
         if (MessageType.ERROR.name().equals(response.getType())) {
             throw new IOException(response.getContent());
         }
-        return MessageType.STORE_ACK.name().equals(response.getType());
+        boolean success = MessageType.STORE_ACK.name().equals(response.getType());
+        if (success) {
+            System.out.printf("%n[MAILBOX] Stored message %s for offline member %s%n> ", 
+                message.getMessageId(), message.getReceiver());
+        }
+        return success;
     }
 
     public List<MailboxEnvelope> pull(int limit) throws IOException {

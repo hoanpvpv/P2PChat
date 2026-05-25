@@ -189,12 +189,16 @@ public class PeerClient {
             for (MailboxEnvelope envelope : mailboxClient.pull(100)) {
                 Message message = mailboxClient.decryptEnvelope(envelope);
                 if (message == null || message.getMessageId() == null) continue;
+                
+                // Do not manually save here. Let PeerServer handle it.
                 boolean alreadyHad = peerManager.getMessageRepository().messageExists(message.getMessageId());
-                peerManager.getMessageRepository().saveMessage(message);
                 mailboxClient.deliveryAck(message.getMessageId());
+                
                 if (!alreadyHad) {
                     delivered.add(message);
-                    notifyMessageToWeb(message);
+                    if (peerManager.getPeerServer() != null) {
+                        peerManager.getPeerServer().processMessageFromLocal(message);
+                    }
                 }
             }
         } catch (Exception e) {

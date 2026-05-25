@@ -327,19 +327,33 @@ public class CoordinatorManager {
         }
 
         // Notify all members
+        List<String> missedMembers = new ArrayList<>();
+        Message disbanded = Message.builder()
+                .type(MessageType.GROUP_DISBANDED.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .groupId(groupId)
+                .timestamp(System.currentTimeMillis())
+                .build();
+
         for (String member : group.getMembers()) {
-            if (!member.equals(myAddress)) {
+            if (!member.equals(myAddress) && !member.equals(peerManager.getLocalUsername())) {
                 try {
-                    Message disbanded = Message.builder()
-                            .type(MessageType.GROUP_DISBANDED.name())
-                            .messageId(ProtocolHandler.generateMessageId())
-                            .sender(myAddress)
-                            .groupId(groupId)
-                            .build();
                     sendTcpMessage(member, disbanded);
                 } catch (Exception e) {
-                    logger.fine("Failed to notify " + member + " of disband");
+                    logger.fine("Failed to notify " + member + " of disband - attempting Mailbox");
+                    missedMembers.add(member);
                 }
+            }
+        }
+
+        if (!missedMembers.isEmpty()) {
+            try {
+                MailboxClient mailbox = new MailboxClient(peerManager);
+                String json = JsonUtil.toJson(disbanded);
+                mailbox.storeGroup(disbanded, json, mailbox.payloadHash(json), groupId, missedMembers, group.getMembers().size());
+            } catch (Exception e) {
+                logger.warning("Mailbox fallback failed for GROUP_DISBANDED: " + e.getMessage());
             }
         }
 
@@ -408,27 +422,41 @@ public class CoordinatorManager {
 
     private void broadcastGroupUpdated(GroupInfo group, String changeType, String affected) {
         List<String> coords = HRWHash.topK(group.getMembers(), group.getGroupId(), Constants.COORDINATOR_K);
+        Message updated = Message.builder()
+                .type(MessageType.GROUP_UPDATED.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .groupId(group.getGroupId())
+                .groupName(group.getGroupName())
+                .members(new ArrayList<>(group.getMembers()))
+                .coordinators(coords)
+                .version(group.getVersion())
+                .changeType(changeType)
+                .affected(affected)
+                .groupMode(group.getGroupMode())
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        List<String> missedMembers = new ArrayList<>();
+
         for (String member : group.getMembers()) {
-            if (!member.equals(myAddress)) {
+            if (!member.equals(myAddress) && !member.equals(peerManager.getLocalUsername())) {
                 try {
-                    Message updated = Message.builder()
-                            .type(MessageType.GROUP_UPDATED.name())
-                            .messageId(ProtocolHandler.generateMessageId())
-                            .sender(myAddress)
-                            .groupId(group.getGroupId())
-                            .groupName(group.getGroupName())
-                            .members(new ArrayList<>(group.getMembers()))
-                            .coordinators(coords)
-                            .version(group.getVersion())
-                            .changeType(changeType)
-                            .affected(affected)
-                            .groupMode(group.getGroupMode())
-                            .timestamp(System.currentTimeMillis())
-                            .build();
                     sendTcpMessage(member, updated);
                 } catch (Exception e) {
-                    logger.fine("Failed to send GROUP_UPDATED to " + member);
+                    logger.fine("Failed to send GROUP_UPDATED to " + member + " - attempting Mailbox");
+                    missedMembers.add(member);
                 }
+            }
+        }
+
+        if (!missedMembers.isEmpty()) {
+            try {
+                MailboxClient mailbox = new MailboxClient(peerManager);
+                String json = JsonUtil.toJson(updated);
+                mailbox.storeGroup(updated, json, mailbox.payloadHash(json), group.getGroupId(), missedMembers, group.getMembers().size());
+            } catch (Exception e) {
+                logger.warning("Mailbox fallback failed for GROUP_UPDATED: " + e.getMessage());
             }
         }
     }
@@ -472,17 +500,30 @@ public class CoordinatorManager {
     }
 
     private void sendGroupKicked(String target, String groupId) {
+        Message kicked = Message.builder()
+                .type(MessageType.GROUP_KICKED.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(target)
+                .groupId(groupId)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        boolean delivered = false;
         try {
-            Message kicked = Message.builder()
-                    .type(MessageType.GROUP_KICKED.name())
-                    .messageId(ProtocolHandler.generateMessageId())
-                    .sender(myAddress)
-                    .groupId(groupId)
-                    .timestamp(System.currentTimeMillis())
-                    .build();
             sendTcpMessage(target, kicked);
+            delivered = true;
         } catch (Exception e) {
-            logger.fine("Failed to send GROUP_KICKED to " + target);
+            logger.fine("Failed to send GROUP_KICKED to " + target + " - attempting Mailbox");
+        }
+        
+        if (!delivered) {
+            try {
+                MailboxClient mailbox = new MailboxClient(peerManager);
+                String json = JsonUtil.toJson(kicked);
+                mailbox.store(kicked, json, mailbox.payloadHash(json));
+            } catch (Exception ex) {
+                logger.warning("Mailbox fallback failed for GROUP_KICKED to " + target + ": " + ex.getMessage());
+            }
         }
     }
 
