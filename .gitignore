@@ -44,3 +44,8 @@ data/
 # Generated files
 **/dependency-reduced-pom.xml
 peers-index.html
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
