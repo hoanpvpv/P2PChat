@@ -1592,3 +1592,54 @@ body {
 .lightbox-next {
   right: 20px;
 }
+
+/* ── Sidebar Header Actions ── */
+.sidebar-logo {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sound-toggle-btn, .power-off-btn {
+  background: #1a1a2e;
+  border: 1px solid #e94560;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+}
+
+.sound-toggle-btn {
+  border-color: #ffd700;
+  color: #ffd700;
+}
+
+.sound-toggle-btn:hover {
+  background: rgba(255, 215, 0, 0.1);
+}
+
+.power-off-btn {
+  color: #e94560;
+}
+
+.power-off-btn:hover:not(:disabled) {
+  background: rgba(233, 69, 96, 0.1);
+}
+
+.power-off-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: #666;
+  color: #666;
+}

@@ -225,6 +225,19 @@ public class PeerManager {
         loadKnownPeersFromDb();
     }
 
+    /**
+     * Called when bootstrap is unreachable. Loads all previously-seen peers from
+     * local SQLite and marks them all as offline. This lets the UI display chat
+     * history and peer list without requiring bootstrap to be up.
+     */
+    public void loadPeersFromCache() {
+        knownPeers.clear();
+        loadKnownPeersFromDb();
+        // Mark all as offline since we can't confirm their status without bootstrap
+        knownPeers.values().forEach(p -> p.setOnline(false));
+        logger.info("[CACHE] Loaded " + knownPeers.size() + " peers from local DB (all marked offline).");
+    }
+
     private void loadKnownPeersFromDb() {
         String sql = "SELECT username, host, port, online, key_id, public_key, last_seen FROM known_peers";
         try (PreparedStatement pstmt = dbManager.getConnection().prepareStatement(sql);

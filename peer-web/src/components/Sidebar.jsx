@@ -6,6 +6,7 @@ export default function Sidebar({
   onSelectChat, onDiscover, onCreateGroup, onAddToGroup,
   onKickFromGroup, onLeaveGroup, onDisbandGroup,
   isOwner, isCoord,
+  soundEnabled = true, onToggleSound,
 }) {
   const [shuttingDown, setShuttingDown] = useState(false);
 
@@ -55,15 +56,25 @@ export default function Sidebar({
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <span>P2PChat</span>
-          <button
-            type="button"
-            className="power-off-btn"
-            onClick={handlePowerOff}
-            disabled={shuttingDown}
-            title="Tắt nguồn peer (mô phỏng off đột ngột)"
-          >
-            {shuttingDown ? '...' : '⏻'}
-          </button>
+          <div className="sidebar-header-actions">
+            <button
+              type="button"
+              className="sound-toggle-btn"
+              onClick={onToggleSound}
+              title={soundEnabled ? 'Tắt âm thanh thông báo' : 'Bật âm thanh thông báo'}
+            >
+              {soundEnabled ? '🔔' : '🔕'}
+            </button>
+            <button
+              type="button"
+              className="power-off-btn"
+              onClick={handlePowerOff}
+              disabled={shuttingDown}
+              title="Tắt nguồn peer (mô phỏng off đột ngột)"
+            >
+              {shuttingDown ? '...' : '⏻'}
+            </button>
+          </div>
         </div>
         <div className="sidebar-user">
           <div className="user-avatar">{username?.charAt(0)?.toUpperCase() || '?'}</div>
