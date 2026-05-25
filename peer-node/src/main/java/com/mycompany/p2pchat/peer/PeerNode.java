@@ -144,13 +144,23 @@ public class PeerNode {
         peerManager.clearKnownPeers();
 
         boolean registered = registerWithBootstrap();
-        if (registered && !heartbeatStarted) {
+        if (registered) {
             peerClient.resolveMailboxFromBootstrap();
-            pullMailboxMessagesToWeb();
+        } else {
+            // Bootstrap is down — load known peers from local cache so the UI
+            // still shows previously-seen peers and chat history is accessible.
+            logger.warning("[BOOTSTRAP] Unreachable. Starting in offline/cache mode.");
+            peerManager.loadPeersFromCache();
+        }
+
+        // Always start background services regardless of bootstrap status.
+        // The heartbeat thread will keep retrying bootstrap until it comes back.
+        if (!heartbeatStarted) {
             startHeartbeat();
-            // Trigger Repair 3: restart — resync all cached groups
             lazyRepairManager.repairAllOnRestart();
         }
+        pullMailboxMessagesToWeb();
+
     }
 
     private boolean registerWithBootstrap() {

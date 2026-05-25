@@ -9,6 +9,7 @@ import {
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import MessageInput from './components/MessageInput';
+import { useSound, useSoundEnabled, setSoundEnabled } from './hooks/useSound';
 import './App.css';
 
 export default function App() {
@@ -30,7 +31,18 @@ export default function App() {
   const wsRef = useRef(null);
   const messagesEndRef = useRef(null);
   const activeChatRef = useRef(activeChat);
+  const infoRef = useRef(info);
   const downloadedRefs = useRef(new Set());
+  const playSound = useSound();
+  const [soundEnabled, setSoundEnabledState] = useState(useSoundEnabled);
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabledState(prev => {
+      const next = !prev;
+      setSoundEnabled(next);
+      return next;
+    });
+  }, []);
 
   const appendUniqueMessage = useCallback((message) => {
     if (!message) return;
@@ -55,6 +67,7 @@ export default function App() {
   }, []);
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+  useEffect(() => { infoRef.current = info; }, [info]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const showToast = useCallback((message, variant = 'info') => {
@@ -122,6 +135,9 @@ export default function App() {
 
       switch (type) {
         case 'PEER_JOIN':
+          refreshData();
+          playSound('join');
+          break;
         case 'PEER_LEAVE':
           refreshData();
           break;
@@ -130,9 +146,12 @@ export default function App() {
           if (cur?.type === 'peer' && (data.sender === cur.name || data.receiver === cur.name)) {
             appendUniqueMessage(data);
           } else {
-            const senderName = data.sender.split(':')[0]; // get username
+            const senderName = data.sender.split(':')[0];
             setUnreadCounts(prev => ({ ...prev, [senderName]: (prev[senderName] || 0) + 1 }));
             showToast(`✉️ Message from ${senderName}`, 'info');
+            if (data.sender !== infoRef.current.username) {
+              playSound('mention');
+            }
           }
           break;
 
@@ -142,6 +161,9 @@ export default function App() {
           } else {
             setUnreadCounts(prev => ({ ...prev, [data.groupId]: (prev[data.groupId] || 0) + 1 }));
             showToast(`👥 Message in group`, 'info');
+            if (data.sender !== infoRef.current.username) {
+              playSound('mention');
+            }
           }
           break;
 
@@ -159,6 +181,9 @@ export default function App() {
           } else {
             setUnreadCounts(prev => ({ ...prev, 'broadcast': (prev['broadcast'] || 0) + 1 }));
             showToast(`📢 ${data.sender}: ${data.content}`, 'info');
+            if (data.sender !== infoRef.current.username) {
+              playSound('mention');
+            }
           }
           break;
           
@@ -421,6 +446,8 @@ export default function App() {
         onDisbandGroup={handleDisbandGroup}
         isOwner={isOwner}
         isCoord={isCoord}
+        soundEnabled={soundEnabled}
+        onToggleSound={toggleSound}
       />
 
       <div className="chat-container">
