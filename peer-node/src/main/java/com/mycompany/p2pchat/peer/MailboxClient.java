@@ -95,6 +95,45 @@ public class MailboxClient {
         return success;
     }
 
+    public boolean storeControl(Message message, String payloadJson, String payloadHash) throws IOException {
+        MailboxEnvelope envelope = new MailboxEnvelope();
+        envelope.messageId = message.getMessageId();
+        envelope.conversationId = "control:" + message.getReceiver();
+        envelope.sender = message.getSender();
+        envelope.receiver = message.getReceiver();
+        envelope.type = message.getType();
+        // Control messages are plaintext
+        envelope.payloadCiphertext = payloadJson;
+        envelope.payloadHash = payloadHash;
+        envelope.clientCreatedAt = message.getTimestamp() > 0 ? message.getTimestamp() : System.currentTimeMillis();
+        envelope.expiresAt = System.currentTimeMillis() + DEFAULT_TTL_MS;
+        envelope.senderPublicKey = peerManager.getLocalPublicKey();
+        envelope.senderKeyId = peerManager.getLocalKeyId();
+        envelope.receiverKeyId = "";
+        envelope.algorithm = "PLAINTEXT-DEMO";
+
+        Message wire = Message.builder()
+                .type(MessageType.STORE_MESSAGE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(message.getReceiver())
+                .content(GSON.toJson(envelope))
+                .timestamp(System.currentTimeMillis())
+                .build();
+
+        Message response = send(wire);
+        if (response == null) return false;
+        if (MessageType.ERROR.name().equals(response.getType())) {
+            throw new IOException(response.getContent());
+        }
+        boolean success = MessageType.STORE_ACK.name().equals(response.getType());
+        if (success) {
+            System.out.printf("%n[MAILBOX] Stored control event %s for offline member %s%n> ", 
+                message.getMessageId(), message.getReceiver());
+        }
+        return success;
+    }
+
     public boolean store(Message message, String payloadJson, String payloadHash) throws IOException {
         PeerInfo receiverPeer = peerManager.getPeer(message.getReceiver());
         if (receiverPeer == null || receiverPeer.getPublicKey() == null || receiverPeer.getPublicKey().isBlank()

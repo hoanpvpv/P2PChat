@@ -466,6 +466,7 @@ public class CoordinatorManager {
                 .type(MessageType.GROUP_JOINED.name())
                 .messageId(ProtocolHandler.generateMessageId())
                 .sender(myAddress)
+                .receiver(newMember)
                 .groupId(group.getGroupId())
                 .groupName(group.getGroupName())
                 .members(new ArrayList<>(group.getMembers()))
@@ -492,10 +493,16 @@ public class CoordinatorManager {
             }
         }
         if (!delivered) {
-            // FIX #4: Fallback — gossip will eventually propagate the updated GroupInfo
-            // (M4 will pick it up via COORD_GOSSIP → handleCoordGossip → updateFromGroupInfo)
-            logger.warning("GROUP_JOINED could not be delivered to " + newMember
-                    + " after 3 attempts. Gossip will eventually sync the state.");
+            // FIX #4: Fallback — try Mailbox, and if that fails, gossip will eventually sync the state.
+            try {
+                MailboxClient mailbox = new MailboxClient(peerManager);
+                String json = JsonUtil.toJson(joined);
+                mailbox.storeControl(joined, json, mailbox.payloadHash(json));
+                logger.info("GROUP_JOINED stored to Mailbox for " + newMember);
+            } catch (Exception ex) {
+                logger.warning("GROUP_JOINED could not be delivered to " + newMember
+                        + " after 3 attempts and Mailbox failed. Gossip will eventually sync the state.");
+            }
         }
     }
 
@@ -520,7 +527,7 @@ public class CoordinatorManager {
             try {
                 MailboxClient mailbox = new MailboxClient(peerManager);
                 String json = JsonUtil.toJson(kicked);
-                mailbox.store(kicked, json, mailbox.payloadHash(json));
+                mailbox.storeControl(kicked, json, mailbox.payloadHash(json));
             } catch (Exception ex) {
                 logger.warning("Mailbox fallback failed for GROUP_KICKED to " + target + ": " + ex.getMessage());
             }
