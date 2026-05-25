@@ -225,9 +225,12 @@ public class PeerClient {
                 server.broadcastIncoming("GROUP_MESSAGE", message);
             } else if (MessageType.DIRECT_MESSAGE.name().equals(message.getType())) {
                 server.broadcastIncoming("DIRECT_MESSAGE", message);
+            } else if (MessageType.BROADCAST.name().equals(message.getType())) {
+                server.broadcastIncoming("BROADCAST", message);
             }
         } catch (Exception ignored) {}
     }
+
 
     // ==================== Group Message (Data Plane) ====================
 
@@ -410,8 +413,32 @@ public class PeerClient {
     public void sendBroadcast(String sender, String content) {
         Message message = ProtocolHandler.createBroadcast(sender, content);
         peerManager.getMessageRepository().saveMessage(message);
-        for (var peer : peerManager.getOnlinePeers()) {
-            sendSingle(message, peer.getHost(), peer.getPort());
+
+        String payloadJson = null;
+        String payloadHash = null;
+
+        for (var peer : peerManager.getAllKnownPeers()) {
+            if (peer.getUsername().equals(sender)) continue;
+            if (peer.isOnline()) {
+                sendSingle(message, peer.getHost(), peer.getPort());
+            } else {
+                try {
+                    if (payloadJson == null) {
+                        payloadJson = mailboxClient.payloadJson(message);
+                        payloadHash = mailboxClient.payloadHash(payloadJson);
+                    }
+                    java.util.List<String> recipients = new java.util.ArrayList<>();
+                    recipients.add(peer.getUsername());
+                    int totalSize = peerManager.getAllKnownPeers().size();
+                    boolean stored = mailboxClient.storeGroup(message, payloadJson, payloadHash,
+                            "broadcast", recipients, totalSize);
+                    if (stored) {
+                        logger.info("Broadcast stored to mailbox for offline peer: " + peer.getUsername());
+                    }
+                } catch (Exception e) {
+                    logger.fine("Could not store broadcast to mailbox for " + peer.getUsername() + ": " + e.getMessage());
+                }
+            }
         }
     }
 

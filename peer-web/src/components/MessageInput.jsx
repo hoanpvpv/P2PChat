@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 
 export default function MessageInput({ onSend, onSendFile, disabled, activeChat }) {
   const [text, setText] = useState('');

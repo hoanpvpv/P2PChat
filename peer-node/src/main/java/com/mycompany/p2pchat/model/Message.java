@@ -33,6 +33,7 @@ public class Message {
     private String newOwner;         // for GROUP_LEAVE (owner case)
     private String groupMode;        // "OPEN" | "RESTRICTED"
     private String reason;           // for GROUP_ADD_REJECTED, FILE_REJECT
+    private String subType;          // optional sub-type e.g. "ANN" for broadcast announcement
 
     // File transfer fields
     private String filename;
@@ -135,6 +136,9 @@ public class Message {
     public String getReason() { return reason; }
     public void setReason(String reason) { this.reason = reason; }
 
+    public String getSubType() { return subType; }
+    public void setSubType(String subType) { this.subType = subType; }
+
     // File transfer getters/setters
     public String getFilename() { return filename; }
     public void setFilename(String filename) { this.filename = filename; }
@@ -190,6 +194,7 @@ public class Message {
         public Builder newOwner(String no) { message.setNewOwner(no); return this; }
         public Builder groupMode(String gm) { message.setGroupMode(gm); return this; }
         public Builder reason(String r) { message.setReason(r); return this; }
+        public Builder subType(String s) { message.setSubType(s); return this; }
         public Builder filename(String f) { message.setFilename(f); return this; }
         public Builder fileSize(long s) { message.setFileSize(s); return this; }
         public Builder sha256(String h) { message.setSha256(h); return this; }

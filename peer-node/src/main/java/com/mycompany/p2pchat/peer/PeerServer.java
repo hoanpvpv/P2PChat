@@ -730,6 +730,7 @@ public class PeerServer {
         map.put("type", msg.getType());
         map.put("timestamp", msg.getTimestamp());
         map.put("lamportClock", msg.getLamportClock());
+        if (msg.getSubType() != null) map.put("subType", msg.getSubType());
         return map;
     }
 

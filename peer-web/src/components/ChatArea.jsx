@@ -102,13 +102,15 @@ export default function ChatArea({ messages, username, messagesEndRef, onDownloa
                 <div className="system-message-content">{msg.content}</div>
               </div>
             ) : isBroadcast ? (
-              <div className="message-wrapper received">
-                <div className="message-avatar-container">
-                  <div className="message-avatar">{msg.sender ? msg.sender.charAt(0).toUpperCase() : '?'}</div>
-                </div>
-                <div id={`msg-${msg.messageId}`} className="message broadcast">
-                  <div className="broadcast-label">📢 Broadcast</div>
-                  <div className="message-sender">{msg.sender}</div>
+              /* ── Regular broadcast: sent = right, received = left ── */
+              <div className={`message-wrapper ${isSent ? 'sent' : 'received'}`}>
+                {!isSent && (
+                  <div className="message-avatar-container">
+                    <div className="message-avatar">{msg.sender ? msg.sender.charAt(0).toUpperCase() : '?'}</div>
+                  </div>
+                )}
+                <div id={`msg-${msg.messageId}`} className={`message broadcast ${isSent ? 'broadcast-sent' : 'broadcast-received'}`}>
+                  {!isSent && <div className="message-sender">{msg.sender}</div>}
                   <div className="message-content">{msg.content}</div>
                   <div className="message-time">{formatTime(msg.timestamp)}</div>
                 </div>
