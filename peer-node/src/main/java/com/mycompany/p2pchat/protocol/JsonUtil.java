@@ -16,6 +16,10 @@ public class JsonUtil {
         return GSON.fromJson(json, Message.class);
     }
 
+    public static <T> T fromJson(String json, Class<T> type) {
+        return GSON.fromJson(json, type);
+    }
+
     public static String toJson(Object obj) {
         return GSON.toJson(obj);
     }

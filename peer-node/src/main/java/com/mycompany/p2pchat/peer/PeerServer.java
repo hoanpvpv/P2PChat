@@ -130,6 +130,15 @@ public class PeerServer {
                 // ── Peer lookup relay ──
                 case PEER_LOOKUP_REQ  -> handlePeerLookupReq(msg, socket);
 
+                // ── Relay store-and-forward fallback ──
+                case RELAY_STORE            -> handleRelayStore(msg, socket);
+                case RELAY_FORWARD          -> handleRelayForward(msg, socket);
+                case RELAY_DELIVERY_ACK     -> handleRelayDeliveryAck(msg, socket);
+                case RELAY_DELIVERED_NOTICE -> handleRelayDeliveredNotice(msg);
+                case RELAY_TOMBSTONE        -> handleRelayTombstone(msg);
+                case RELAY_PULL             -> handleRelayPull(msg, socket);
+                case RELAY_SUPERSEDE        -> handleRelaySupersede(msg, socket);
+
                 // ── File Transfer ──
                 case FILE_OFFER  -> peerManager.getFileTransferManager().handleFileOffer(msg);
                 case FILE_ACCEPT -> peerManager.getFileTransferManager().handleFileAccept(msg);
@@ -234,6 +243,129 @@ public class PeerServer {
         if (peerManager.getMessageRepository().saveMessage(msg)) {
             broadcastWs("OFFLINE_MESSAGE", messageToMap(msg));
         }
+    }
+
+    private void handleRelayStore(Message msg, Socket socket) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null || env.receiver == null || env.payloadJson == null) {
+            sendError(socket, "Invalid relay envelope");
+            return;
+        }
+        peerManager.getRelayRepository().storeRelayMessage(env);
+        Message ack = Message.builder()
+                .type(MessageType.RELAY_STORE_ACK.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(env.sender)
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendResponse(socket, ack);
+    }
+
+    private void handleRelayForward(Message msg, Socket socket) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null || env.payloadJson == null) {
+            sendError(socket, "Invalid relay forward");
+            return;
+        }
+        if (!peerManager.getLocalUsername().equals(env.receiver)) {
+            sendError(socket, "Relay forward target mismatch");
+            return;
+        }
+
+        boolean alreadyHad = peerManager.getMessageRepository().messageExists(env.messageId);
+        if (!alreadyHad) {
+            Message relayed = JsonUtil.fromJson(env.payloadJson);
+            if (relayed != null) {
+                handleDirectMessage(relayed, null);
+            }
+        }
+        peerManager.getRelayRepository().addTombstone(env.messageId, env.payloadHash, "DELIVERED");
+        if (peerClient != null) {
+            peerClient.sendRelayDeliveredNotice(env);
+        }
+        Message ack = Message.builder()
+                .type(MessageType.RELAY_DELIVERY_ACK.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(msg.getSender())
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendResponse(socket, ack);
+    }
+
+    private void handleRelayDeliveryAck(Message msg, Socket socket) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null) {
+            sendError(socket, "Invalid relay delivery ack");
+            return;
+        }
+        peerManager.getRelayRepository().markDelivered(env.messageId, env.payloadHash);
+        if (peerClient != null) {
+            peerClient.sendRelayDeliveredNotice(env);
+        }
+        sendAck(msg, socket);
+    }
+
+    private void handleRelayDeliveredNotice(Message msg) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null) return;
+        peerManager.getRelayRepository().markDelivered(env.messageId, env.payloadHash);
+        peerManager.getOutboxRepository().markDelivered(env.messageId);
+        if (peerClient != null) {
+            peerClient.broadcastRelayTombstone(env);
+        }
+        broadcastOutboxUpdate(env.messageId, "DELIVERED_VIA_RELAY", env.receiver);
+    }
+
+    private void handleRelayTombstone(Message msg) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null) return;
+        peerManager.getRelayRepository().markDelivered(env.messageId, env.payloadHash);
+    }
+
+    private void handleRelaySupersede(Message msg, Socket socket) {
+        var env = JsonUtil.fromJson(msg.getContent(), com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope.class);
+        if (env == null || env.messageId == null) {
+            sendError(socket, "Invalid relay supersede");
+            return;
+        }
+        peerManager.getRelayRepository().markSuperseded(env.messageId);
+        sendAck(msg, socket);
+    }
+
+    private void handleRelayPull(Message msg, Socket socket) {
+        String receiver = msg.getSender();
+        if (msg.getContent() != null && !msg.getContent().isBlank()) {
+            receiver = msg.getContent();
+        }
+        List<com.mycompany.p2pchat.database.RelayRepository.RelayMessage> pending =
+                peerManager.getRelayRepository().pendingForReceiver(receiver, 100);
+        List<com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope> envelopes = new ArrayList<>();
+        for (var m : pending) {
+            var env = new com.mycompany.p2pchat.database.RelayRepository.RelayEnvelope();
+            env.messageId = m.messageId;
+            env.sender = m.sender;
+            env.receiver = m.receiver;
+            env.payloadJson = m.payloadJson;
+            env.payloadHash = m.payloadHash;
+            env.generation = m.generation;
+            env.role = m.role;
+            env.leaseUntil = m.leaseUntil;
+            env.expiresAt = m.expiresAt;
+            envelopes.add(env);
+        }
+        Message response = Message.builder()
+                .type(MessageType.RELAY_PULL_RESPONSE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(receiver)
+                .content(JsonUtil.toJson(envelopes))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendResponse(socket, response);
     }
 
     // ─────────────────────── Peer Events ───────────────────────

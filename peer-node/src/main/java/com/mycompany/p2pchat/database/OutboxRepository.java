@@ -82,6 +82,14 @@ public class OutboxRepository {
         }
     }
 
+    public void markStoredRelay(String messageId) {
+        updateState(messageId, "STORED_RELAY", null, null, System.currentTimeMillis() + Constants.RELAY_ROTATION_INTERVAL_MS);
+    }
+
+    public void markRelayRetryable(String messageId, String error) {
+        markRetryable(messageId, "ERR_RELAY_SEND", error, false);
+    }
+
     public void markRetryable(String messageId, String error) {
         markRetryable(messageId, "ERR_RETRYABLE", error, false);
     }
@@ -101,8 +109,18 @@ public class OutboxRepository {
     public List<OutboxEntry> dueForDeliveryRetry(int limit) {
         String sql = """
                 SELECT * FROM outbound_messages
-                WHERE state NOT IN ('DELIVERED', 'DEAD_LETTER', 'STORED_MAILBOX')
+                WHERE state NOT IN ('DELIVERED', 'DEAD_LETTER', 'STORED_MAILBOX', 'STORED_RELAY')
                   AND next_retry_at <= ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """;
+        return queryEntries(sql, System.currentTimeMillis(), Math.max(1, limit));
+    }
+
+    public List<OutboxEntry> relayStoredDueForRotation(int limit) {
+        String sql = """
+                SELECT * FROM outbound_messages
+                WHERE state = 'STORED_RELAY' AND next_retry_at <= ?
                 ORDER BY created_at ASC
                 LIMIT ?
                 """;
