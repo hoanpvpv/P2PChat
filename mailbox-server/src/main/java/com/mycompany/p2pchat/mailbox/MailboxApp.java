@@ -1,7 +1,12 @@
 package com.mycompany.p2pchat.mailbox;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class MailboxApp {
+    private static final Logger log = LoggerFactory.getLogger(MailboxApp.class);
     public static void main(String[] args) {
+        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug");
         int port = 9100;
         String dbPath = "data/mailbox.db";
 

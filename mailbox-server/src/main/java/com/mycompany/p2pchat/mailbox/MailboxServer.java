@@ -7,8 +7,11 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class MailboxServer {
+    private static final Logger log = LoggerFactory.getLogger(MailboxServer.class);
     private static final long DEFAULT_TTL_MS = 7L * 24 * 60 * 60 * 1000;
 
     private final int port;
@@ -32,7 +35,7 @@ public class MailboxServer {
                     Socket socket = serverSocket.accept();
                     pool.execute(() -> handle(socket));
                 } catch (IOException e) {
-                    if (running) System.err.println("Mailbox accept failed: " + e.getMessage());
+                    if (running) log.error("Mailbox accept failed: {}", e.getMessage(), e);
                 }
             }
         } catch (IOException e) {
@@ -56,11 +59,12 @@ public class MailboxServer {
                 if (line.trim().isEmpty()) continue;
                 WireMessage msg = JsonUtil.fromJson(line.trim(), WireMessage.class);
                 WireMessage response = dispatch(msg);
-                out.println(JsonUtil.toJson(response));
+                String respStr = JsonUtil.toJson(response);
+                out.println(respStr);
                 out.flush();
             }
         } catch (Exception e) {
-            System.err.println("Mailbox client error: " + e.getMessage());
+            log.error("Mailbox client error: {}", e.getMessage(), e);
         }
     }
 
@@ -85,6 +89,8 @@ public class MailboxServer {
         MailboxEnvelope env = JsonUtil.fromJson(msg.getContent(), MailboxEnvelope.class);
         validateEnvelope(env);
         env.applyDefaults(DEFAULT_TTL_MS);
+        String target = (env.receiver != null && !env.receiver.isBlank()) ? env.receiver : "Group " + env.groupId;
+        System.out.println("[STORE] " + env.sender + " đang lưu tin nhắn (ID: " + env.messageId + ") gửi tới " + target);
         MailboxRepository.StoreResult result = repository.store(env);
         if (result == MailboxRepository.StoreResult.CONFLICT) {
             return error("ERROR_CONFLICT: messageId exists with different payloadHash");
@@ -105,6 +111,9 @@ public class MailboxServer {
             return error("Missing receiver for PULL_MESSAGES");
         }
         List<MailboxEnvelope> messages = repository.pull(receiver, limit);
+        if (!messages.isEmpty()) {
+            System.out.println("[PULL] Đã trả về " + messages.size() + " tin nhắn cho " + receiver);
+        }
         return WireMessage.of(MessageType.PULL_RESPONSE.name(), "mailbox", receiver,
                 JsonUtil.toJson(messages));
     }
@@ -159,6 +168,7 @@ public class MailboxServer {
     }
 
     private WireMessage error(String error) {
+        log.warn("Sending error: {}", error);
         return WireMessage.of(MessageType.ERROR.name(), "mailbox", null, error);
     }
 
