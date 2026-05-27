@@ -1,0 +1,158 @@
+sim_time,event,peer,detail
+0.03,JOIN,peer_09,online=1 neighbors=4 session=3.9s
+0.16,JOIN,peer_00,online=2 neighbors=4 session=28.8s
+0.23,JOIN,peer_08,online=3 neighbors=4 session=333.1s
+0.38,JOIN,peer_01,online=4 neighbors=4 session=45.2s
+0.56,JOIN,peer_04,online=5 neighbors=4 session=212.6s
+0.64,JOIN,peer_03,online=6 neighbors=4 session=118.3s
+0.68,JOIN,peer_05,online=7 neighbors=4 session=0.7s
+0.78,JOIN,peer_07,online=8 neighbors=4 session=76.5s
+0.84,JOIN,peer_06,online=9 neighbors=4 session=68.7s
+0.99,JOIN,peer_02,online=10 neighbors=4 session=46.2s
+1.38,CRASH,peer_05,session=0.7s affected=4
+3.97,CRASH,peer_09,session=3.9s affected=4
+5.00,HEARTBEAT,,online=8 neighs~3
+5.11,SEND_MSG,peer_08,to=peer_07 [ONLINE] delivered=True
+6.15,REJOIN,peer_05,online=9
+10.00,HEARTBEAT,,online=9 neighs~3
+10.23,SEND_MSG,peer_00,to=peer_07 [ONLINE] delivered=True
+10.25,SEND_MSG,peer_05,to=peer_00 [ONLINE] delivered=True
+11.82,REJOIN,peer_09,online=10
+13.79,SEND_MSG,peer_05,to=peer_07 [ONLINE] delivered=True
+14.22,CRASH,peer_02,session=14.2s affected=3
+15.00,HEARTBEAT,,online=9 neighs~3
+18.49,SEND_MSG,peer_03,to=peer_04 [ONLINE] delivered=True
+18.70,CRASH,peer_01,session=18.7s affected=4
+20.00,HEARTBEAT,,online=8 neighs~3
+22.67,CRASH,peer_05,session=22.7s affected=4
+22.74,CRASH,peer_00,session=22.7s affected=4
+25.00,HEARTBEAT,,online=6 neighs~3
+25.67,SEND_MSG,peer_07,to=peer_06 [ONLINE] delivered=True
+28.30,REJOIN,peer_02,online=7
+29.48,CRASH,peer_02,session=1.2s affected=4
+30.00,HEARTBEAT,,online=6 neighs~2
+30.21,CRASH,peer_07,session=30.2s affected=4
+34.40,REJOIN,peer_02,online=6
+35.00,HEARTBEAT,,online=6 neighs~2
+36.84,CRASH,peer_09,session=36.8s affected=3
+38.21,SEND_MSG,peer_08,to=peer_03 [ONLINE] delivered=True
+38.51,SEND_MSG,peer_06,to=peer_02 [ONLINE] delivered=True
+38.96,SEND_MSG,peer_04,to=peer_02 [ONLINE] delivered=True
+40.00,HEARTBEAT,,online=5 neighs~2
+45.00,HEARTBEAT,,online=5 neighs~2
+47.19,CRASH,peer_02,session=46.2s affected=4
+50.00,HEARTBEAT,,online=4 neighs~2
+51.97,REJOIN,peer_07,online=5
+55.00,HEARTBEAT,,online=5 neighs~2
+58.04,SEND_MSG,peer_08,to=peer_07 [ONLINE] delivered=True
+60.00,HEARTBEAT,,online=5 neighs~2
+63.93,CRASH,peer_06,session=63.9s affected=2
+65.00,HEARTBEAT,,online=4 neighs~2
+70.00,HEARTBEAT,,online=4 neighs~2
+72.71,SEND_MSG,peer_08,to=peer_07 [ONLINE] delivered=True
+75.00,HEARTBEAT,,online=4 neighs~2
+76.46,SEND_MSG,peer_07,to=peer_03 [ONLINE] delivered=True
+77.31,CRASH,peer_07,session=76.5s affected=4
+80.00,HEARTBEAT,,online=3 neighs~2
+85.00,HEARTBEAT,,online=3 neighs~2
+89.68,SEND_MSG,peer_04,to=peer_03 [ONLINE] delivered=True
+90.00,HEARTBEAT,,online=3 neighs~2
+95.00,HEARTBEAT,,online=3 neighs~2
+95.92,SEND_MSG,peer_08,to=peer_04 [ONLINE] delivered=True
+97.59,REJOIN,peer_06,online=4
+98.80,SEND_MSG,peer_03,to=peer_08 [ONLINE] delivered=True
+98.91,SEND_MSG,peer_08,to=peer_04 [ONLINE] delivered=True
+100.00,HEARTBEAT,,online=4 neighs~2
+100.15,SEND_MSG,peer_03,to=peer_04 [ONLINE] delivered=True
+105.00,HEARTBEAT,,online=4 neighs~2
+105.14,SEND_MSG,peer_08,to=peer_03 [ONLINE] delivered=True
+107.78,REJOIN,peer_02,online=5
+110.00,HEARTBEAT,,online=5 neighs~2
+112.19,CRASH,peer_02,session=4.4s affected=4
+112.74,REJOIN,peer_01,online=5
+114.68,CRASH,peer_06,session=17.1s affected=4
+115.00,HEARTBEAT,,online=4 neighs~2
+116.93,SEND_MSG,peer_04,to=peer_01 [ONLINE] delivered=True
+118.94,CRASH,peer_03,session=118.3s affected=2
+120.00,HEARTBEAT,,online=3 neighs~2
+120.80,SEND_MSG,peer_04,to=peer_08 [ONLINE] delivered=True
+122.20,SEND_MSG,peer_08,to=peer_04 [ONLINE] delivered=True
+123.25,SEND_MSG,peer_01,to=peer_08 [ONLINE] delivered=True
+125.00,HEARTBEAT,,online=3 neighs~2
+125.43,CRASH,peer_04,session=125.4s affected=4
+125.44,SEND_MSG,peer_08,to=peer_01 [ONLINE] delivered=True
+130.00,HEARTBEAT,,online=2 neighs~2
+132.32,CRASH,peer_01,session=19.6s affected=4
+135.00,HEARTBEAT,,online=1 neighs~1
+135.41,SEND_MSG,,skip: <2 peers online
+135.69,SEND_MSG,,skip: <2 peers online
+140.00,HEARTBEAT,,online=1 neighs~1
+140.99,SEND_MSG,,skip: <2 peers online
+145.00,HEARTBEAT,,online=1 neighs~1
+146.18,SEND_MSG,,skip: <2 peers online
+146.49,SEND_MSG,,skip: <2 peers online
+147.59,CRASH,peer_08,session=147.6s affected=0
+150.00,HEARTBEAT,,online=0 neighs~1
+153.01,SEND_MSG,,skip: <2 peers online
+155.00,HEARTBEAT,,online=0 neighs~1
+160.00,HEARTBEAT,,online=0 neighs~1
+161.07,SEND_MSG,,skip: <2 peers online
+161.65,SEND_MSG,,skip: <2 peers online
+162.71,SEND_MSG,,skip: <2 peers online
+165.00,HEARTBEAT,,online=0 neighs~1
+166.55,SEND_MSG,,skip: <2 peers online
+167.31,SEND_MSG,,skip: <2 peers online
+168.32,SEND_MSG,,skip: <2 peers online
+170.00,HEARTBEAT,,online=0 neighs~1
+171.43,SEND_MSG,,skip: <2 peers online
+175.00,HEARTBEAT,,online=0 neighs~1
+180.00,HEARTBEAT,,online=0 neighs~1
+181.80,SEND_MSG,,skip: <2 peers online
+182.20,SEND_MSG,,skip: <2 peers online
+185.00,HEARTBEAT,,online=0 neighs~1
+190.00,HEARTBEAT,,online=0 neighs~1
+190.45,SEND_MSG,,skip: <2 peers online
+195.00,HEARTBEAT,,online=0 neighs~1
+200.00,HEARTBEAT,,online=0 neighs~1
+200.14,SEND_MSG,,skip: <2 peers online
+200.65,SEND_MSG,,skip: <2 peers online
+205.00,HEARTBEAT,,online=0 neighs~1
+205.93,SEND_MSG,,skip: <2 peers online
+209.82,SEND_MSG,,skip: <2 peers online
+209.89,SEND_MSG,,skip: <2 peers online
+210.00,HEARTBEAT,,online=0 neighs~1
+210.38,SEND_MSG,,skip: <2 peers online
+215.00,HEARTBEAT,,online=0 neighs~1
+217.39,SEND_MSG,,skip: <2 peers online
+218.74,SEND_MSG,,skip: <2 peers online
+220.00,HEARTBEAT,,online=0 neighs~1
+221.34,SEND_MSG,,skip: <2 peers online
+224.63,SEND_MSG,,skip: <2 peers online
+225.00,HEARTBEAT,,online=0 neighs~1
+230.00,HEARTBEAT,,online=0 neighs~1
+234.63,SEND_MSG,,skip: <2 peers online
+235.00,HEARTBEAT,,online=0 neighs~1
+240.00,HEARTBEAT,,online=0 neighs~1
+245.00,HEARTBEAT,,online=0 neighs~1
+246.26,SEND_MSG,,skip: <2 peers online
+247.16,SEND_MSG,,skip: <2 peers online
+247.17,SEND_MSG,,skip: <2 peers online
+249.65,SEND_MSG,,skip: <2 peers online
+250.00,HEARTBEAT,,online=0 neighs~1
+255.00,HEARTBEAT,,online=0 neighs~1
+260.00,HEARTBEAT,,online=0 neighs~1
+262.70,SEND_MSG,,skip: <2 peers online
+265.00,HEARTBEAT,,online=0 neighs~1
+270.00,HEARTBEAT,,online=0 neighs~1
+270.39,SEND_MSG,,skip: <2 peers online
+272.07,SEND_MSG,,skip: <2 peers online
+275.00,HEARTBEAT,,online=0 neighs~1
+278.03,SEND_MSG,,skip: <2 peers online
+280.00,HEARTBEAT,,online=0 neighs~1
+284.59,SEND_MSG,,skip: <2 peers online
+285.00,HEARTBEAT,,online=0 neighs~1
+290.00,HEARTBEAT,,online=0 neighs~1
+292.24,SEND_MSG,,skip: <2 peers online
+295.00,HEARTBEAT,,online=0 neighs~1
+297.66,SEND_MSG,,skip: <2 peers online
+300.00,END,,simulation complete

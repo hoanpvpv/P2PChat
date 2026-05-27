@@ -647,5 +647,78 @@ docker run -d --name peer-alice --network p2p-net \
 | File transfer lỗi | Chưa expose file port hoặc peer không reachable | Mở port `peerPort + 1000` và kiểm tra host quảng bá. |
 | Docker build chậm | Lần đầu tải dependency Maven/npm | Bình thường, chờ build hoàn tất. |
 
+## Mô phỏng Churn
+
+Script `churn_sim.py` mô phỏng hiện tượng **churn** (peer liên tục join/crash/rejoin) theo mô hình event-driven để đánh giá khả năng chịu đựng của mạng P2P qua 3 chỉ số:
+
+- **MDR** — Message Delivery Ratio: tỷ lệ tin nhắn đến được đích.
+- **CT**  — Convergence Time: thời gian mạng hồi phục sau crash.
+- **CO**  — Control Overhead: tỷ lệ băng thông dùng cho gói điều khiển (heartbeat, register…).
+
+### Chạy nhanh
+
+```bash
+python churn_sim.py
+```
+
+### Các tham số
+
+| Flag | Mặc định | Ý nghĩa |
+|---|---:|---|
+| `--n-peers` | 10 | Tổng số peer |
+| `--duration` | 300 | Thời gian mô phỏng (s) |
+| `--mean-session` | 60 | TB thời gian sống trước crash (s) |
+| `--mean-downtime` | 30 | TB thời gian offline trước rejoin (s) |
+| `--msg-interval` | 5 | TB khoảng cách giữa 2 tin nhắn (s) |
+| `--heartbeat-interval` | 5 | Chu kỳ heartbeat (s) |
+| `--lambda-join` | 0.05 | Tốc độ peer mới tham gia (peer/s) |
+| `--topology` | random | `random` \| `ring` \| `mesh` |
+| `--max-neighbors` | 4 | Số láng giềng tối đa mỗi peer |
+| `--seed` | 42 | Random seed (để tái lập kết quả) |
+
+### Ví dụ
+
+```bash
+# Mặc định
+python churn_sim.py
+
+# Churn nặng — peer sống ngắn, nhiều crash
+python churn_sim.py --mean-session 20 --duration 300 --seed 7
+
+# Ring topology — ít liên kết, CT cao hơn
+python churn_sim.py --topology ring --n-peers 15 --duration 300
+
+# Mesh topology — nhiều láng giềng, CT thấp hơn
+python churn_sim.py --topology mesh --max-neighbors 6 --n-peers 20 --duration 300
+
+# Heartbeat nhanh hơn — phát hiện crash sớm hơn
+python churn_sim.py --heartbeat-interval 2.0 --duration 300
+
+# Tin nhắn dày đặc hơn
+python churn_sim.py --msg-interval 1.0 --duration 300
+```
+
+### Đầu ra
+
+Mỗi lần chạy in ra bảng kết quả gồm:
+
+```
+  [1] THONG KE SU KIEN          — số lần mỗi loại sự kiện
+  [2] MESSAGE DELIVERY RATIO     — MDR tổng, MDR direct, MDR mailbox
+  [3] CONVERGENCE TIME           — TB/min/max thời gian hồi phục
+  [4] CONTROL OVERHEAD           — bytes data vs control, tỷ lệ CO
+  [5] KET LUAN                  — đánh giá [OK]/[WARN] từng chỉ số
+```
+
+File log CSV được lưu tại `churn-logs/churn_<timestamp>.csv` chứa log chi tiết từng sự kiện theo thời gian mô phỏng.
+
+### Đánh giá
+
+| Chỉ số | Ngưỡng [OK] |
+|---|---|
+| MDR | ≥ 80% |
+| CT  | ≤ heartbeat_interval × 4 |
+| CO  | ≤ 80% (bình thường ~90% do heartbeat chiếm ưu thế) |
+
 ## Tác giả
 Nhóm 13 - Lớp 01 - Các hệ thống phân tán
