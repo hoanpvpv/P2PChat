@@ -663,18 +663,18 @@ python churn_sim.py
 
 ### Các tham số
 
-|| Flag | Mặc định | Ý nghĩa |
-||---|---:|---|
-|| `--n-peers` | 10 | Tổng số peer |
-|| `--duration` | 300 | Thời gian mô phỏng (s) |
-|| `--mean-session` | 60 | TB thời gian sống trước crash (s) |
-|| `--mean-downtime` | 30 | TB thời gian offline trước rejoin (s) |
-|| `--msg-interval` | 5 | TB khoảng cách giữa 2 tin nhắn (s) |
-|| `--heartbeat-interval` | 5 | Chu kỳ heartbeat (s) |
-|| `--lambda-join` | 0.05 | Tốc độ peer mới tham gia (peer/s) |
-|| `--topology` | random | `random` \| `ring` \| `mesh` |
-|| `--max-neighbors` | 4 | Số láng giềng tối đa mỗi peer |
-|| `--seed` | 42 | Random seed (để tái lập kết quả) |
+| Flag | Mặc định | Ý nghĩa |
+|---|---:|---|
+| `--n-peers` | 10 | Tổng số peer |
+| `--duration` | 300 | Thời gian mô phỏng (s) |
+| `--mean-session` | 60 | TB thời gian sống trước crash (s) |
+| `--mean-downtime` | 30 | TB thời gian offline trước rejoin (s) |
+| `--msg-interval` | 5 | TB khoảng cách giữa 2 tin nhắn (s) |
+| `--heartbeat-interval` | 5 | Chu kỳ heartbeat (s) |
+| `--lambda-join` | 0.05 | Tốc độ peer mới tham gia (peer/s) |
+| `--topology` | random | `random` \| `ring` \| `mesh` |
+| `--max-neighbors` | 4 | Số láng giềng tối đa mỗi peer |
+| `--seed` | 42 | Random seed (để tái lập kết quả) |
 
 ### Ví dụ
 
@@ -714,11 +714,11 @@ File log CSV được lưu tại `churn-logs/churn_<timestamp>.csv` chứa log c
 
 ### Đánh giá
 
-|| Chỉ số | Ngưỡng [OK] |
-||---|---|
-|| MDR | ≥ 80% |
-|| CT  | ≤ heartbeat_interval × 4 |
-|| CO  | ≤ 80% (bình thường ~90% do heartbeat chiếm ưu thế) |
+| Chỉ số | Ngưỡng [OK] |
+|---|---|
+| MDR | ≥ 80% |
+| CT  | ≤ heartbeat_interval × 4 |
+| CO  | ≤ 80% (bình thường ~90% do heartbeat chiếm ưu thế) |
 
 ## Tác giả
 Nhóm 13 - Lớp 01 - Các hệ thống phân tán
