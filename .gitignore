@@ -37,6 +37,7 @@ Desktop.ini
 # Logs
 *.log
 logs/
+churn-logs/
 
 # Docker volumes
 data/
