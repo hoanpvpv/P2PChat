@@ -5,7 +5,7 @@ public class Constants {
     public static final int DEFAULT_DASHBOARD_PORT = 8081;
     public static final int DEFAULT_PEER_PORT = 5001;
     public static final int HEARTBEAT_INTERVAL = 5000;
-    public static final int HEARTBEAT_TIMEOUT = 45000;
+    public static final int HEARTBEAT_TIMEOUT = 15000;
     public static final int ACK_TIMEOUT = 5000;
     public static final int MAX_RETRIES = 3;
     public static final int RECONNECT_INTERVAL = 3000;

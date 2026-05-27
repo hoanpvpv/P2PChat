@@ -1,0 +1,9 @@
+timestamp,peer,event,method,elapsed_ms,note
+2026-05-27T10:20:22.361,hoang,JOIN,start,995,ok
+2026-05-27T10:20:23.540,hoan,JOIN,start,776,ok
+2026-05-27T10:20:51.102,duc,CRASH,kill,668,ok
+2026-05-27T10:20:51.657,hoan,CRASH,kill,555,ok
+2026-05-27T10:21:21.295,duc,JOIN,start,694,ok
+2026-05-27T10:21:22.374,hoan,JOIN,start,879,ok
+2026-05-27T10:21:51.313,duc,LEAVE,graceful,880,ok
+2026-05-27T10:21:52.452,bob,LEAVE,graceful,1138,ok
