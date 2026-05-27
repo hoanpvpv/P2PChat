@@ -23,6 +23,19 @@ public class Constants {
     public static final long MAILBOX_CIRCUIT_OPEN_MS = 30000;
     public static final String DELIMITER = "\n";
 
+    // Relay store-and-forward fallback
+    public static final int RELAY_REPLICATION_FACTOR = 4;
+    public static final long RELAY_LEASE_MS = 2 * 60 * 1000;
+    public static final long RELAY_ROTATION_INTERVAL_MS = 60 * 1000;
+    public static final long RELAY_FORWARD_INITIAL_DELAY_MS = 10 * 1000;
+    public static final long RELAY_FORWARD_BACKOFF_MAX_MS = 2 * 60 * 1000;
+    public static final long RELAY_MESSAGE_TTL_MS = 7L * 24 * 60 * 60 * 1000;
+    public static final long RELAY_SUPERSEDED_GRACE_MS = 5 * 60 * 1000;
+    public static final long RELAY_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+    public static final long RELAY_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+    public static final long RELAY_COOLDOWN_MS = 3 * 60 * 1000;
+    public static final long RELAY_DELIVERED_CLEANUP_MS = 2 * 60 * 60 * 1000;
+
     // Database
     public static final String DB_EXTENSION = ".db";
     public static final String DATA_DIR = "data";

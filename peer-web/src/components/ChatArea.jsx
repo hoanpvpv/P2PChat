@@ -17,14 +17,22 @@ function formatDate(ts) {
 function renderDeliveryState(state, msg = {}) {
   switch (state) {
     case 'DELIVERED_DIRECT':
+    case 'DELIVERED_VIA_RELAY':
+    case 'DELIVERED_VIA_MAILBOX':
     case 'DELIVERED':
       return ' ✓✓ Đã giao';
     case 'STORED_MAILBOX':
       return ' 📬 Đã lưu mailbox';
+    case 'STORED_RELAY':
+      return ' 🔁 Đã lưu relay';
     case 'QUEUED_LOCAL':
     case 'FAILED_RETRYABLE':
+    case 'RELAY_FAILED_RETRYABLE':
       if (msg.failureCode === 'ERR_MAILBOX_SEND' && /Missing E2EE public key/i.test(msg.deliveryError || '')) {
         return ' 🔑 Chờ public key để lưu mailbox';
+      }
+      if (msg.failureCode === 'ERR_RELAY_SEND' || state === 'RELAY_FAILED_RETRYABLE') {
+        return ' 🔁 Relay lỗi, sẽ thử lại';
       }
       if (msg.failureCode === 'ERR_MAILBOX_SEND') {
         return ' 📬 Chưa lưu mailbox, sẽ thử lại';
@@ -38,6 +46,7 @@ function renderDeliveryState(state, msg = {}) {
     case 'PENDING_LOCAL':
     case 'DIRECT_IN_FLIGHT':
     case 'MAILBOX_IN_FLIGHT':
+    case 'RELAY_IN_FLIGHT':
       return ' ⌛ Đang gửi';
     default:
       return ` · ${state}`;

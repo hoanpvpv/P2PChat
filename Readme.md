@@ -1,6 +1,6 @@
 # P2PChat - Hệ thống Chat Ngang hàng
 
-P2PChat là hệ thống chat peer-to-peer viết bằng Java 17, có Web UI React, lưu dữ liệu cục bộ bằng SQLite và hỗ trợ nhắn tin trực tiếp, nhóm, broadcast, gửi file, store-and-forward qua mailbox server khi peer offline.
+P2PChat là hệ thống chat peer-to-peer viết bằng Java 17, có Web UI React, lưu dữ liệu cục bộ bằng SQLite và hỗ trợ nhắn tin trực tiếp, nhóm, broadcast, gửi file, store-and-forward qua mailbox server và relay peer trung gian khi peer offline.
 
 Mỗi peer vừa là client gửi tin, vừa là TCP server nhận tin. Bootstrap server chỉ giữ vai trò discovery/registry và điều phối endpoint mailbox; dữ liệu offline được tách sang `mailbox-server`.
 
@@ -100,7 +100,7 @@ Nếu bạn vô tình đóng trình duyệt, không cần phải cấu hình l�
 |---|---|
 | `bootstrap-server` | Đăng ký peer, heartbeat, peer discovery, dashboard theo dõi trạng thái, trả endpoint mailbox qua `RESOLVE_MAILBOX`. |
 | `mailbox-server` | Lưu tin offline bằng SQLite, hỗ trợ `STORE_MESSAGE`, `PULL_MESSAGES`, `DELIVERY_ACK`, TTL 7 ngày, ack từng member cho group message. |
-| `peer-node` | Peer TCP server/client, Web API Javalin, CLI, SQLite local, DHT-lite group coordinator, outbox retry, E2EE cho direct/offline payload, file transfer. |
+| `peer-node` | Peer TCP server/client, Web API Javalin, CLI, SQLite local, DHT-lite group coordinator, outbox retry, relay store-and-forward fallback, E2EE cho direct/offline payload, file transfer. |
 | `peer-web` | React Web UI cho chat, group management, broadcast, file transfer, trạng thái outbox và realtime WebSocket. |
 
 ## Cấu trúc dự án
@@ -131,7 +131,7 @@ P2PChat/
 │   └── src/main/
 │       ├── java/com/mycompany/p2pchat/
 │       │   ├── peer/              # PeerNode, PeerClient, PeerServer, mailbox, E2EE, coordinator
-│       │   ├── database/          # SQLite repositories: messages, outbox, file transfers
+│       │   ├── database/          # SQLite repositories: messages, outbox, relay, file transfers
 │       │   ├── filetransfer/      # Offer/accept/chunk transfer/resume
 │       │   ├── model/
 │       │   ├── protocol/
@@ -154,14 +154,15 @@ P2PChat/
 - Heartbeat mỗi 5 giây và phát hiện peer mất kết nối.
 - Direct message P2P qua TCP, ACK timeout 5 giây, retry tối đa 3 lần.
 - Store-and-forward qua mailbox server khi peer offline hoặc direct send thất bại.
-- Durable outbox tại peer, retry nền, backoff, circuit breaker khi mailbox lỗi.
+- Relay store-and-forward qua peer trung gian khi mailbox không khả dụng.
+- Durable outbox tại peer, retry nền, backoff, circuit breaker khi mailbox lỗi, relay rotation khi peer trung gian churn.
 - E2EE payload cho direct/offline message bằng khóa identity của peer.
 - Pull mailbox định kỳ và delivery ack sau khi lưu local thành công.
 - Chat nhóm DHT-lite: coordinator HRW top-K, gossip, add/kick/leave/disband, repair/resync cache.
 - Group offline message qua mailbox với snapshot member và per-member delivery ack.
 - Broadcast message và lịch sử broadcast.
 - File transfer trực tiếp: offer/accept/reject/cancel, chunk 64 KB, SHA-256, resume/checkpoint, giới hạn 100 MB.
-- SQLite local cho message history, group cache, known peers, recent peers, outbox, file transfer.
+- SQLite local cho message history, group cache, known peers, recent peers, outbox, relay store, file transfer.
 - Web UI React + Javalin REST API + WebSocket realtime.
 - Bootstrap dashboard tại port 9001 khi chạy bằng `run.sh`.
 - Docker scripts để khởi động nhiều peer nhanh và sinh trang `peers-index.html`.
@@ -201,6 +202,7 @@ Message TCP dùng JSON newline-delimited.
 |---|---|
 | Bootstrap/discovery | `REGISTER`, `REGISTER_ACK`, `REGISTER_NACK`, `PEER_LIST`, `PEER_JOIN`, `PEER_LEAVE`, `HEARTBEAT`, `HEARTBEAT_ACK`, `DISCOVER`, `RESOLVE_MAILBOX`, `RESOLVE_MAILBOX_ACK` |
 | Mailbox/offline | `STORE_MESSAGE`, `STORE_ACK`, `PULL_MESSAGES`, `PULL_RESPONSE`, `DELIVERY_ACK`, `MAILBOX_QUOTA_EXCEEDED`, `MAILBOX_MESSAGE_EXPIRED` |
+| Relay store-and-forward | `RELAY_STORE`, `RELAY_STORE_ACK`, `RELAY_FORWARD`, `RELAY_DELIVERY_ACK`, `RELAY_DELIVERED_NOTICE`, `RELAY_TOMBSTONE`, `RELAY_PULL`, `RELAY_PULL_RESPONSE`, `RELAY_SUPERSEDE` |
 | Chat | `DIRECT_MESSAGE`, `GROUP_MESSAGE`, `BROADCAST`, `TYPING`, `ACK`, `SYSTEM` |
 | Group coordinator | `COORD_INIT`, `COORD_GOSSIP`, `GROUP_ADD`, `GROUP_LEAVE`, `GROUP_KICK`, `GROUP_DISBAND`, `GROUP_JOINED`, `GROUP_UPDATED`, `GROUP_KICKED`, `GROUP_DISBANDED` |
 | Repair/history | `GROUP_RESYNC_REQ`, `GROUP_RESYNC_RESP`, `CACHE_STALE`, `GROUP_GET`, `GROUP_HISTORY_DIGEST`, `GROUP_HISTORY_REQUEST`, `GROUP_HISTORY_RESPONSE` |
@@ -541,6 +543,37 @@ Receiver giải mã, lưu SQLite, gửi DELIVERY_ACK
 Mailbox đánh dấu DELIVERED
 ```
 
+Nếu mailbox không khả dụng, sender dùng relay store-and-forward qua các peer trung gian:
+
+```text
+Sender gửi direct thất bại
+Sender gửi Mailbox thất bại hoặc mailbox circuit đang mở
+Sender chọn tối đa 4 relay peer online, loại trừ sender và receiver
+Sender -> Relay: RELAY_STORE(encrypted direct payload)
+Relay -> Sender: RELAY_STORE_ACK
+Sender đánh dấu STORED_RELAY, vẫn giữ bản gốc trong local outbox
+```
+
+Relay peer lưu payload đã mã hóa và chỉ forward về receiver gốc:
+
+```text
+Relay -> Receiver: RELAY_FORWARD(encrypted direct payload)
+Receiver dedup theo message_id, giải mã/lưu nếu chưa có
+Receiver -> Relay: RELAY_DELIVERY_ACK
+Relay -> Sender: RELAY_DELIVERED_NOTICE
+Sender đánh dấu DELIVERED_VIA_RELAY và broadcast RELAY_TOMBSTONE
+```
+
+Receiver cũng chủ động pull khi online:
+
+```text
+Receiver -> peers online: RELAY_PULL
+Relay -> Receiver: RELAY_PULL_RESPONSE
+Receiver gom theo message_id, xử lý một lần, ACK tất cả relay trả bản trùng
+```
+
+Relay fallback dùng lease ngắn để phù hợp churn cao: 4 relay mỗi tin, 1 primary + 3 backup, lease 2 phút, rotation mỗi 60 giây, cooldown relay fail 3 phút, tombstone TTL 24 giờ. Relay cũ nhận `RELAY_SUPERSEDE` khi hết lease để dừng chủ động forward nhưng không làm mất bản sao trước khi relay mới lưu thành công.
+
 ### File transfer
 
 ```text
@@ -561,6 +594,10 @@ Peer SQLite (`data/peers/<username>` khi chạy Docker) gồm:
 - `group_cache`: metadata group DHT-lite.
 - `recent_peers`: bootstrap cache fallback.
 - `outbound_messages`: durable outbox cho retry và mailbox.
+- `relay_assignments`: relay peer mà sender đã giao lưu hộ, gồm role, generation, lease và trạng thái.
+- `relay_messages`: encrypted payload mà peer trung gian đang lưu/forward hộ receiver.
+- `relay_tombstones`: dấu vết delivered/expired để chặn relay cũ gửi lại tin đã giao.
+- `relay_peer_cooldowns`: peer relay vừa fail, tạm thời không chọn lại trong 3 phút.
 - `file_transfers`, `file_chunks`: metadata transfer và checkpoint chunk.
 
 Mailbox SQLite gồm:
@@ -605,7 +642,8 @@ docker run -d --name peer-alice --network p2p-net \
 | Port bị chiếm | Port bootstrap/peer/web/file đang dùng | Đổi port hoặc dừng process/container cũ. |
 | Web UI không load | Chưa build React vào `peer-node/src/main/resources/static` | Chạy `./build.sh`. |
 | Peer không đăng ký được | Sai bootstrap endpoint hoặc bootstrap chưa chạy | Kiểm tra `--bootstrap`, firewall, container network. |
-| Tin offline không tới | Mailbox chưa chạy hoặc sai endpoint | Kiểm tra `--mailbox`, dashboard, log mailbox. |
+| Tin offline không tới | Mailbox chưa chạy/sai endpoint và không còn relay online đủ public key | Kiểm tra `--mailbox`, dashboard, log mailbox, peer list và outbox state `STORED_RELAY`/`FAILED_RETRYABLE`. |
+| Tin relay bị gửi trùng | Relay cũ quay lại hoặc nhiều relay cùng giữ bản sao | Receiver dedup bằng `message_id`; kiểm tra tombstone/relay cleanup nếu UI vẫn hiện trùng. |
 | File transfer lỗi | Chưa expose file port hoặc peer không reachable | Mở port `peerPort + 1000` và kiểm tra host quảng bá. |
 | Docker build chậm | Lần đầu tải dependency Maven/npm | Bình thường, chờ build hoàn tất. |
 
