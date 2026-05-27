@@ -175,9 +175,11 @@ public class WebServer {
             if (receiver == null || content == null) { ctx.status(400).result("Missing receiver or content"); return; }
             PeerClient.SendResult result = peerClient.sendDirectMessageDetailed(
                     peerManager.getLocalUsername(), receiver, content);
+            var outbox = peerManager.getOutboxRepository().get(result.messageId);
+            String state = outbox != null ? outbox.state : result.status;
             ctx.contentType("application/json").result(gson.toJson(Map.of(
                     "sent", "DELIVERED_DIRECT".equals(result.status),
-                    "status", result.status,
+                    "status", state,
                     "messageId", result.messageId,
                     "timestamp", result.timestamp)));
         });

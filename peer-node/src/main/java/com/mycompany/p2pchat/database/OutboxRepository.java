@@ -293,7 +293,7 @@ public class OutboxRepository {
         }
     }
 
-    private OutboxEntry get(String messageId) {
+    public OutboxEntry get(String messageId) {
         String sql = "SELECT * FROM outbound_messages WHERE message_id = ? LIMIT 1";
         try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
             ps.setString(1, messageId);

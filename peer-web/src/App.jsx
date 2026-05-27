@@ -324,12 +324,19 @@ export default function App() {
     try {
       if (activeChat.type === 'peer') {
         const result = await sendMessage(activeChat.name, content);
+        let latestOutbox = null;
+        try {
+          const outbox = await fetchOutbox();
+          latestOutbox = (outbox || []).find(e => e.messageId === result.messageId);
+        } catch (e) { /* best-effort */ }
         setMessages(prev => prev.map(msg => msg.messageId === tempId
           ? {
               ...msg,
               messageId: result.messageId || tempId,
               timestamp: result.timestamp || timestamp,
-              deliveryState: result.status || 'DELIVERED',
+              deliveryState: latestOutbox?.state || result.status || 'DELIVERED',
+              failureCode: latestOutbox?.failureCode,
+              deliveryError: latestOutbox?.lastError,
             }
           : msg));
       } else if (activeChat.type === 'group') {

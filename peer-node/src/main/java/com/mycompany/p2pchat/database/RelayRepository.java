@@ -195,6 +195,43 @@ public class RelayRepository {
         return peers;
     }
 
+    public List<RelayAssignment> assignmentsForMessage(String messageId) {
+        List<RelayAssignment> out = new ArrayList<>();
+        String sql = """
+                SELECT * FROM relay_assignments
+                WHERE message_id = ? AND status NOT IN ('DELIVERED', 'UNREACHABLE')
+                ORDER BY assigned_at ASC
+                """;
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setString(1, messageId);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) out.add(mapAssignment(rs));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to read relay assignments", e);
+        }
+        return out;
+    }
+
+    public String deliveryStatus(String messageId) {
+        String sql = "SELECT status FROM relay_messages WHERE message_id = ? LIMIT 1";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(sql)) {
+            ps.setString(1, messageId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getString(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to read relay delivery status", e);
+        }
+        String tombstoneSql = "SELECT final_status FROM relay_tombstones WHERE message_id = ? AND expires_at > ? LIMIT 1";
+        try (PreparedStatement ps = dbManager.getConnection().prepareStatement(tombstoneSql)) {
+            ps.setString(1, messageId);
+            ps.setLong(2, System.currentTimeMillis());
+            ResultSet rs = ps.executeQuery();
+            return rs.next() ? rs.getString(1) : "UNKNOWN";
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to read relay tombstone status", e);
+        }
+    }
+
     public void markAssignmentUnreachable(String messageId, String relayPeer, int generation, String reason) {
         markRelayCooldown(relayPeer, reason);
         String sql = """

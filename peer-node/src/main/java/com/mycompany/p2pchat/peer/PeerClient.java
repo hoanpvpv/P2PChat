@@ -251,6 +251,9 @@ public class PeerClient {
         }
         peerManager.getRelayRepository().supersedeExpiredAssignments(now);
         for (var entry : peerManager.getOutboxRepository().relayStoredDueForRotation(25)) {
+            if (pollRelayDeliveryStatus(entry.messageId, entry.receiver)) {
+                continue;
+            }
             if (peerManager.getRelayRepository().activeAssignmentCount(entry.messageId)
                     >= Constants.RELAY_REPLICATION_FACTOR) {
                 continue;
@@ -266,6 +269,34 @@ public class PeerClient {
                 notifyOutboxState(entry.messageId, "RELAY_FAILED_RETRYABLE", entry.receiver);
             }
         }
+    }
+
+    private boolean pollRelayDeliveryStatus(String messageId, String receiver) {
+        for (var assignment : peerManager.getRelayRepository().assignmentsForMessage(messageId)) {
+            PeerInfo relay = peerManager.getPeer(assignment.relayPeer);
+            if (relay == null || !hasEndpoint(relay)) continue;
+            Message check = Message.builder()
+                    .type(MessageType.RELAY_STATUS_CHECK.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .receiver(assignment.relayPeer)
+                    .content(messageId)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            Message response = sendAndRead(check, relay.getHost(), relay.getPort(), 1500);
+            if (response == null || !MessageType.RELAY_STATUS_RESPONSE.name().equals(response.getType())
+                    || response.getContent() == null) {
+                continue;
+            }
+            String[] parts = response.getContent().split("\\|", 2);
+            if (parts.length == 2 && messageId.equals(parts[0]) && "DELIVERED".equals(parts[1])) {
+                peerManager.getOutboxRepository().markDelivered(messageId);
+                peerManager.getRelayRepository().markDelivered(messageId, null);
+                notifyOutboxState(messageId, "DELIVERED_VIA_RELAY", receiver);
+                return true;
+            }
+        }
+        return false;
     }
 
     public void retryRelayForwards() {

@@ -138,6 +138,7 @@ public class PeerServer {
                 case RELAY_TOMBSTONE        -> handleRelayTombstone(msg);
                 case RELAY_PULL             -> handleRelayPull(msg, socket);
                 case RELAY_SUPERSEDE        -> handleRelaySupersede(msg, socket);
+                case RELAY_STATUS_CHECK     -> handleRelayStatusCheck(msg, socket);
 
                 // ── File Transfer ──
                 case FILE_OFFER  -> peerManager.getFileTransferManager().handleFileOffer(msg);
@@ -334,6 +335,24 @@ public class PeerServer {
         }
         peerManager.getRelayRepository().markSuperseded(env.messageId);
         sendAck(msg, socket);
+    }
+
+    private void handleRelayStatusCheck(Message msg, Socket socket) {
+        String messageId = msg.getContent();
+        if (messageId == null || messageId.isBlank()) {
+            sendError(socket, "Missing relay messageId");
+            return;
+        }
+        String status = peerManager.getRelayRepository().deliveryStatus(messageId);
+        Message response = Message.builder()
+                .type(MessageType.RELAY_STATUS_RESPONSE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(msg.getSender())
+                .content(messageId + "|" + status)
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendResponse(socket, response);
     }
 
     private void handleRelayPull(Message msg, Socket socket) {
