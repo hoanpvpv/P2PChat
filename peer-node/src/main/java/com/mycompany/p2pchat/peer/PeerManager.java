@@ -28,6 +28,7 @@ public class PeerManager {
     private final LamportClock lamportClock;
     private final RecentPeersCache recentPeersCache;
     private final com.mycompany.p2pchat.database.OutboxRepository outboxRepository;
+    private final com.mycompany.p2pchat.database.RelayRepository relayRepository;
     private LazyRepairManager lazyRepairManager;
     private final com.mycompany.p2pchat.filetransfer.FileTransferManager fileTransferManager;
     private CoordinatorManager coordinatorManager;
@@ -56,6 +57,7 @@ public class PeerManager {
         this.lamportClock = new LamportClock();
         this.recentPeersCache = new RecentPeersCache(dbManager);
         this.outboxRepository = new com.mycompany.p2pchat.database.OutboxRepository(dbManager);
+        this.relayRepository = new com.mycompany.p2pchat.database.RelayRepository(dbManager);
         this.fileTransferManager = new com.mycompany.p2pchat.filetransfer.FileTransferManager(this);
         loadKnownPeersFromDb();
     }
@@ -363,6 +365,7 @@ public class PeerManager {
     public String getLastBootstrapError() { return lastBootstrapError; }
     public com.mycompany.p2pchat.filetransfer.FileTransferManager getFileTransferManager() { return fileTransferManager; }
     public com.mycompany.p2pchat.database.OutboxRepository getOutboxRepository() { return outboxRepository; }
+    public com.mycompany.p2pchat.database.RelayRepository getRelayRepository() { return relayRepository; }
 
     public String getMailboxHost() { return mailboxHost; }
     public void setMailboxHost(String mailboxHost) { this.mailboxHost = mailboxHost; }

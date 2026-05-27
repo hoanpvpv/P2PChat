@@ -95,3 +95,64 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 );
+
+-- Relay store-and-forward fallback when mailbox is unavailable.
+CREATE TABLE IF NOT EXISTS relay_assignments (
+    message_id TEXT NOT NULL,
+    relay_peer TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    status TEXT NOT NULL,
+    assigned_at BIGINT NOT NULL,
+    lease_until BIGINT NOT NULL,
+    last_ack_at BIGINT DEFAULT 0,
+    PRIMARY KEY (message_id, relay_peer, generation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_assignments_message
+ON relay_assignments(message_id, status, lease_until);
+
+CREATE TABLE IF NOT EXISTS relay_messages (
+    message_id TEXT PRIMARY KEY,
+    sender TEXT NOT NULL,
+    receiver TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    generation INTEGER DEFAULT 1,
+    role TEXT DEFAULT 'BACKUP',
+    status TEXT NOT NULL,
+    stored_at BIGINT NOT NULL,
+    lease_until BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    delivered_at BIGINT DEFAULT 0,
+    retry_count INTEGER DEFAULT 0,
+    next_retry_at BIGINT DEFAULT 0,
+    last_attempt_at BIGINT DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_messages_due
+ON relay_messages(status, next_retry_at, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_relay_messages_receiver
+ON relay_messages(receiver, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS relay_tombstones (
+    message_id TEXT PRIMARY KEY,
+    payload_hash TEXT,
+    final_status TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_tombstones_expires
+ON relay_tombstones(expires_at);
+
+CREATE TABLE IF NOT EXISTS relay_peer_cooldowns (
+    relay_peer TEXT PRIMARY KEY,
+    failed_at BIGINT NOT NULL,
+    cooldown_until BIGINT NOT NULL,
+    reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_relay_cooldowns_until
+ON relay_peer_cooldowns(cooldown_until);

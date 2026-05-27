@@ -8,12 +8,17 @@ import com.mycompany.p2pchat.protocol.ProtocolHandler;
 import com.mycompany.p2pchat.utils.Constants;
 import com.mycompany.p2pchat.utils.LoggerUtil;
 import com.mycompany.p2pchat.model.PeerInfo;
+import com.mycompany.p2pchat.database.RelayRepository;
 
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -78,7 +83,7 @@ public class PeerClient {
         var peer = peerManager.getPeer(receiver);
         if (peer == null || !hasEndpoint(peer)) {
             logger.warning("Peer endpoint unknown, storing in mailbox: " + receiver);
-            status = storeMailbox(message, payloadJson, payloadHash) ? "STORED_MAILBOX" : "QUEUED_LOCAL";
+            status = storeMailbox(message, payloadJson, payloadHash) ? storedFallbackState(message.getMessageId()) : "QUEUED_LOCAL";
         } else {
             if (!peer.isOnline()) {
                 logger.info("Peer marked offline by bootstrap, trying direct anyway: "
@@ -94,7 +99,7 @@ public class PeerClient {
             } else {
                 peerManager.removeKnownPeer(receiver);
                 peerManager.getOutboxRepository().markDirectRetryable(message.getMessageId(), "Direct send failed");
-                status = storeMailbox(message, payloadJson, payloadHash) ? "STORED_MAILBOX" : "QUEUED_LOCAL";
+                status = storeMailbox(message, payloadJson, payloadHash) ? storedFallbackState(message.getMessageId()) : "QUEUED_LOCAL";
             }
         }
         notifyOutboxState(message.getMessageId(), status, receiver);
@@ -172,8 +177,14 @@ public class PeerClient {
 
             if (!"STORED_MAILBOX".equals(entry.state)) {
                 boolean stored = storeMailbox(message, entry.payloadJson, entry.payloadHash);
-                notifyOutboxState(entry.messageId, stored ? "STORED_MAILBOX" : "FAILED_RETRYABLE", entry.receiver);
+                notifyOutboxState(entry.messageId, stored ? storedFallbackState(entry.messageId) : "FAILED_RETRYABLE", entry.receiver);
             }
+    }
+
+    private String storedFallbackState(String messageId) {
+        return peerManager.getRelayRepository().activeAssignmentCount(messageId) > 0
+                ? "STORED_RELAY"
+                : "STORED_MAILBOX";
     }
 
     private boolean hasEndpoint(PeerInfo peer) {
@@ -233,9 +244,169 @@ public class PeerClient {
         }
     }
 
+    public void retryRelayOutbox() {
+        long now = System.currentTimeMillis();
+        for (var expired : peerManager.getRelayRepository().assignmentsNeedingRotation(now, 100)) {
+            sendRelaySupersede(expired);
+        }
+        peerManager.getRelayRepository().supersedeExpiredAssignments(now);
+        for (var entry : peerManager.getOutboxRepository().relayStoredDueForRotation(25)) {
+            if (pollRelayDeliveryStatus(entry.messageId, entry.receiver)) {
+                continue;
+            }
+            if (peerManager.getRelayRepository().activeAssignmentCount(entry.messageId)
+                    >= Constants.RELAY_REPLICATION_FACTOR) {
+                continue;
+            }
+            try {
+                Message message = JsonUtil.fromJson(entry.payloadJson);
+                boolean stored = storeRelayFallback(message, entry.payloadJson, entry.payloadHash, true);
+                if (stored) {
+                    notifyOutboxState(entry.messageId, "STORED_RELAY", entry.receiver);
+                }
+            } catch (Exception e) {
+                peerManager.getOutboxRepository().markRelayRetryable(entry.messageId, e.getMessage());
+                notifyOutboxState(entry.messageId, "RELAY_FAILED_RETRYABLE", entry.receiver);
+            }
+        }
+    }
+
+    private boolean pollRelayDeliveryStatus(String messageId, String receiver) {
+        for (var assignment : peerManager.getRelayRepository().assignmentsForMessage(messageId)) {
+            PeerInfo relay = peerManager.getPeer(assignment.relayPeer);
+            if (relay == null || !hasEndpoint(relay)) continue;
+            Message check = Message.builder()
+                    .type(MessageType.RELAY_STATUS_CHECK.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .receiver(assignment.relayPeer)
+                    .content(messageId)
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            Message response = sendAndRead(check, relay.getHost(), relay.getPort(), 1500);
+            if (response == null || !MessageType.RELAY_STATUS_RESPONSE.name().equals(response.getType())
+                    || response.getContent() == null) {
+                continue;
+            }
+            String[] parts = response.getContent().split("\\|", 2);
+            if (parts.length == 2 && messageId.equals(parts[0]) && "DELIVERED".equals(parts[1])) {
+                peerManager.getOutboxRepository().markDelivered(messageId);
+                peerManager.getRelayRepository().markDelivered(messageId, null);
+                notifyOutboxState(messageId, "DELIVERED_VIA_RELAY", receiver);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void retryRelayForwards() {
+        for (var relay : peerManager.getRelayRepository().dueForForward(25)) {
+            PeerInfo receiver = peerManager.getPeer(relay.receiver);
+            if (receiver == null || !hasEndpoint(receiver)) {
+                peerManager.getRelayRepository().markForwardAttempt(relay.messageId, false);
+                continue;
+            }
+            RelayRepository.RelayEnvelope env = toRelayEnvelope(relay);
+            Message forward = Message.builder()
+                    .type(MessageType.RELAY_FORWARD.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .receiver(relay.receiver)
+                    .content(JsonUtil.toJson(env))
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            Message response = sendAndRead(forward, receiver.getHost(), receiver.getPort(), Constants.ACK_TIMEOUT);
+            boolean delivered = response != null && MessageType.RELAY_DELIVERY_ACK.name().equals(response.getType());
+            peerManager.getRelayRepository().markForwardAttempt(relay.messageId, delivered);
+            if (delivered) {
+                sendRelayDeliveredNotice(env);
+            }
+        }
+    }
+
+    public void pullRelayMessages() {
+        if (!peerManager.hasLocalIdentity()) return;
+        for (PeerInfo peer : peerManager.getOnlinePeers()) {
+            if (peer.getUsername().equals(peerManager.getLocalUsername()) || !hasEndpoint(peer)) continue;
+            Message request = Message.builder()
+                    .type(MessageType.RELAY_PULL.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .receiver(peer.getUsername())
+                    .content(peerManager.getLocalUsername())
+                    .timestamp(System.currentTimeMillis())
+                    .build();
+            Message response = sendAndRead(request, peer.getHost(), peer.getPort(), 2500);
+            if (response == null || !MessageType.RELAY_PULL_RESPONSE.name().equals(response.getType())
+                    || response.getContent() == null || response.getContent().isBlank()) {
+                continue;
+            }
+            java.lang.reflect.Type listType = new com.google.gson.reflect.TypeToken<List<RelayRepository.RelayEnvelope>>() {}.getType();
+            List<RelayRepository.RelayEnvelope> envelopes = new com.google.gson.Gson().fromJson(response.getContent(), listType);
+            if (envelopes == null) continue;
+            for (RelayRepository.RelayEnvelope env : envelopes) {
+                acceptRelayEnvelopeFromPull(env, peer);
+            }
+        }
+    }
+
+    private void acceptRelayEnvelopeFromPull(RelayRepository.RelayEnvelope env, PeerInfo relayPeer) {
+        if (env == null || env.messageId == null || env.payloadJson == null) return;
+        if (!peerManager.getLocalUsername().equals(env.receiver)) return;
+        boolean alreadyHad = peerManager.getMessageRepository().messageExists(env.messageId);
+        if (!alreadyHad && peerManager.getPeerServer() != null) {
+            Message relayed = JsonUtil.fromJson(env.payloadJson);
+            if (relayed != null) {
+                peerManager.getPeerServer().processMessageFromLocal(relayed);
+            }
+        }
+        peerManager.getRelayRepository().addTombstone(env.messageId, env.payloadHash, "DELIVERED");
+        Message ack = Message.builder()
+                .type(MessageType.RELAY_DELIVERY_ACK.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(relayPeer.getUsername())
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendAndRead(ack, relayPeer.getHost(), relayPeer.getPort(), 2500);
+    }
+
     public void gossipAckToMailbox(String messageId) {
         try { mailboxClient.deliveryAck(messageId); }
         catch (Exception e) { logger.fine("gossip ack fail: " + e.getMessage()); }
+    }
+
+    public void sendRelayDeliveredNotice(RelayRepository.RelayEnvelope env) {
+        if (env == null || env.sender == null || env.sender.equals(peerManager.getLocalUsername())) {
+            return;
+        }
+        PeerInfo sender = peerManager.getPeer(env.sender);
+        if (sender == null || !hasEndpoint(sender)) return;
+        Message notice = Message.builder()
+                .type(MessageType.RELAY_DELIVERED_NOTICE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(env.sender)
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendAndRead(notice, sender.getHost(), sender.getPort(), 2500);
+    }
+
+    public void broadcastRelayTombstone(RelayRepository.RelayEnvelope env) {
+        if (env == null || env.messageId == null) return;
+        Message tombstone = Message.builder()
+                .type(MessageType.RELAY_TOMBSTONE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        for (PeerInfo peer : peerManager.getOnlinePeers()) {
+            if (peer.getUsername().equals(peerManager.getLocalUsername()) || !hasEndpoint(peer)) continue;
+            sendAndRead(tombstone, peer.getHost(), peer.getPort(), 1500);
+        }
     }
 
     private void notifyMessageToWeb(Message message) {
@@ -361,6 +532,110 @@ public class PeerClient {
         }
     }
 
+    private boolean storeRelayFallback(Message message, String payloadJson, String payloadHash, boolean refreshOnly) {
+        if (message == null || message.getReceiver() == null || message.getReceiver().isBlank()) return false;
+        PeerInfo receiver = peerManager.getPeer(message.getReceiver());
+        Message encrypted = encryptDirectMessage(message, receiver);
+        if (encrypted == null) return false;
+
+        List<PeerInfo> relays = chooseRelayPeers(message.getMessageId(), message.getReceiver());
+        if (relays.isEmpty()) return false;
+
+        boolean storedAny = false;
+        int generation = Math.max(1, (int) (System.currentTimeMillis() / Constants.RELAY_LEASE_MS));
+        long now = System.currentTimeMillis();
+        long leaseUntil = now + Constants.RELAY_LEASE_MS;
+        long expiresAt = now + Constants.RELAY_MESSAGE_TTL_MS;
+        int index = 0;
+        for (PeerInfo relay : relays) {
+            RelayRepository.RelayEnvelope env = new RelayRepository.RelayEnvelope();
+            env.messageId = message.getMessageId();
+            env.sender = message.getSender();
+            env.receiver = message.getReceiver();
+            env.payloadJson = JsonUtil.toJson(encrypted);
+            env.payloadHash = payloadHash;
+            env.generation = generation;
+            env.role = index == 0 ? "PRIMARY" : "BACKUP";
+            env.leaseUntil = leaseUntil;
+            env.expiresAt = expiresAt;
+            index++;
+
+            Message wire = Message.builder()
+                    .type(MessageType.RELAY_STORE.name())
+                    .messageId(ProtocolHandler.generateMessageId())
+                    .sender(peerManager.getLocalUsername())
+                    .receiver(relay.getUsername())
+                    .content(JsonUtil.toJson(env))
+                    .timestamp(now)
+                    .build();
+            Message response = sendAndRead(wire, relay.getHost(), relay.getPort(), Constants.ACK_TIMEOUT);
+            if (response != null && MessageType.RELAY_STORE_ACK.name().equals(response.getType())) {
+                peerManager.getRelayRepository().saveAssignment(
+                        message.getMessageId(), relay.getUsername(), generation, env.role, leaseUntil);
+                storedAny = true;
+            } else {
+                peerManager.getRelayRepository().markAssignmentUnreachable(
+                        message.getMessageId(), relay.getUsername(), generation, "RELAY_STORE failed");
+            }
+        }
+        if (storedAny) {
+            peerManager.getOutboxRepository().markStoredRelay(message.getMessageId());
+            System.out.printf("%n[RELAY] Stored message %s via peer relay fallback%n> ", message.getMessageId());
+        } else if (!refreshOnly) {
+            peerManager.getOutboxRepository().markRelayRetryable(message.getMessageId(), "No relay peer accepted message");
+        }
+        return storedAny;
+    }
+
+    private List<PeerInfo> chooseRelayPeers(String messageId, String receiver) {
+        Set<String> alreadyAssigned = peerManager.getRelayRepository().assignedRelayPeers(messageId);
+        return peerManager.getOnlinePeers().stream()
+                .filter(p -> !p.getUsername().equals(peerManager.getLocalUsername()))
+                .filter(p -> !p.getUsername().equals(receiver))
+                .filter(p -> !alreadyAssigned.contains(p.getUsername()))
+                .filter(p -> !peerManager.getRelayRepository().isRelayInCooldown(p.getUsername()))
+                .filter(this::hasEndpoint)
+                .sorted(Comparator.comparing(p -> sha256Hex(messageId + "|" + receiver + "|" + p.getUsername())))
+                .limit(Constants.RELAY_REPLICATION_FACTOR)
+                .toList();
+    }
+
+    private void sendRelaySupersede(RelayRepository.RelayAssignment assignment) {
+        PeerInfo relay = peerManager.getPeer(assignment.relayPeer);
+        if (relay == null || !hasEndpoint(relay)) {
+            peerManager.getRelayRepository().markRelayCooldown(assignment.relayPeer, "Relay offline during supersede");
+            return;
+        }
+        RelayRepository.RelayEnvelope env = new RelayRepository.RelayEnvelope();
+        env.messageId = assignment.messageId;
+        env.generation = assignment.generation;
+        env.role = assignment.role;
+        env.leaseUntil = assignment.leaseUntil;
+        Message msg = Message.builder()
+                .type(MessageType.RELAY_SUPERSEDE.name())
+                .messageId(ProtocolHandler.generateMessageId())
+                .sender(peerManager.getLocalUsername())
+                .receiver(assignment.relayPeer)
+                .content(JsonUtil.toJson(env))
+                .timestamp(System.currentTimeMillis())
+                .build();
+        sendAndRead(msg, relay.getHost(), relay.getPort(), 1500);
+    }
+
+    private RelayRepository.RelayEnvelope toRelayEnvelope(RelayRepository.RelayMessage relay) {
+        RelayRepository.RelayEnvelope env = new RelayRepository.RelayEnvelope();
+        env.messageId = relay.messageId;
+        env.sender = relay.sender;
+        env.receiver = relay.receiver;
+        env.payloadJson = relay.payloadJson;
+        env.payloadHash = relay.payloadHash;
+        env.generation = relay.generation;
+        env.role = relay.role;
+        env.leaseUntil = relay.leaseUntil;
+        env.expiresAt = relay.expiresAt;
+        return env;
+    }
+
     // ==================== Coordinator Requests with Fallback ====================
 
     /**
@@ -478,6 +753,22 @@ public class PeerClient {
         }
     }
 
+    private Message sendAndRead(Message message, String host, int port, int timeoutMs) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            socket.setSoTimeout(timeoutMs);
+            PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            out.println(JsonUtil.toJson(message));
+            out.flush();
+            String resp = in.readLine();
+            return resp != null && !resp.isBlank() ? JsonUtil.fromJson(resp.trim()) : null;
+        } catch (IOException e) {
+            logger.fine("Request failed to " + host + ":" + port + ": " + e.getMessage());
+            return null;
+        }
+    }
+
     private Message encryptDirectMessage(Message plaintext, PeerInfo receiver) {
         if (receiver == null || receiver.getPublicKey() == null || receiver.getPublicKey().isBlank()
                 || receiver.getKeyId() == null || receiver.getKeyId().isBlank()) {
@@ -502,7 +793,7 @@ public class PeerClient {
         if (isMailboxCircuitOpen()) {
             peerManager.getOutboxRepository().markMailboxRetryable(
                     message.getMessageId(), "Mailbox circuit open until " + mailboxCircuitOpenUntil);
-            return false;
+            return storeRelayFallback(message, payloadJson, payloadHash, false);
         }
         try {
             peerManager.getOutboxRepository().markMailboxInFlight(message.getMessageId());
@@ -515,9 +806,12 @@ public class PeerClient {
             return stored;
         } catch (Exception e) {
             recordMailboxFailure();
-            peerManager.getOutboxRepository().markMailboxRetryable(message.getMessageId(), e.getMessage());
             logger.warning("Failed to store mailbox message: " + e.getMessage());
-            return false;
+            boolean relayed = storeRelayFallback(message, payloadJson, payloadHash, false);
+            if (!relayed) {
+                peerManager.getOutboxRepository().markMailboxRetryable(message.getMessageId(), e.getMessage());
+            }
+            return relayed;
         }
     }
 
@@ -540,6 +834,18 @@ public class PeerClient {
 
     private Message createError(String msg) {
         return Message.builder().type(MessageType.ERROR.name()).content(msg).build();
+    }
+
+    private String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hash.length * 2);
+            for (byte b : hash) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     public void shutdown() {

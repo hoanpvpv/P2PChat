@@ -235,13 +235,19 @@ public class PeerNode {
                     }
                     peerClient.retryMailboxOutbox();
                     peerClient.retryOutboxDelivery();
+                    peerClient.retryRelayOutbox();
+                    peerClient.retryRelayForwards();
                     peerManager.getOutboxRepository().cleanupDeliveredOlderThan(
                             System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000);
                     if (peerManager.hasLocalIdentity()) {
                         pullMailboxMessagesToWeb();
+                        peerClient.pullRelayMessages();
                         // Promote STORED_MAILBOX → DELIVERED for messages the receiver
                         // has now pulled, so the sender UI stops showing them as pending.
                         peerClient.pollMailboxDeliveries();
+                    }
+                    if (tick % 12 == 0) {
+                        peerManager.getRelayRepository().cleanup();
                     }
                 } catch (InterruptedException e) {
                     break;

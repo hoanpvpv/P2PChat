@@ -75,6 +75,19 @@ public enum MessageType {
     PEER_LOOKUP_REQ,
     PEER_LOOKUP_RESP,
 
+    // Relay store-and-forward fallback
+    RELAY_STORE,
+    RELAY_STORE_ACK,
+    RELAY_FORWARD,
+    RELAY_DELIVERY_ACK,
+    RELAY_DELIVERED_NOTICE,
+    RELAY_TOMBSTONE,
+    RELAY_PULL,
+    RELAY_PULL_RESPONSE,
+    RELAY_SUPERSEDE,
+    RELAY_STATUS_CHECK,
+    RELAY_STATUS_RESPONSE,
+
     // Legacy
     CREATE_GROUP,
     ADD_TO_GROUP,

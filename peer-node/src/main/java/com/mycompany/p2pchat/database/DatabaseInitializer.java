@@ -40,6 +40,7 @@ public class DatabaseInitializer {
             stmt.close();
             migrateKnownPeers(connection);
             migrateOutbox(connection);
+            migrateRelay(connection);
             logger.info("Database schema initialized");
         } catch (SQLException | IOException e) {
             logger.severe("Failed to initialize schema: " + e.getMessage());
@@ -58,6 +59,13 @@ public class DatabaseInitializer {
         addColumnIfMissing(connection, "known_peers", "key_id", "TEXT");
         addColumnIfMissing(connection, "known_peers", "public_key", "TEXT");
         addColumnIfMissing(connection, "known_peers", "last_seen", "BIGINT DEFAULT 0");
+    }
+
+    private static void migrateRelay(Connection connection) throws SQLException {
+        addColumnIfMissing(connection, "relay_messages", "generation", "INTEGER DEFAULT 1");
+        addColumnIfMissing(connection, "relay_messages", "role", "TEXT DEFAULT 'BACKUP'");
+        addColumnIfMissing(connection, "relay_messages", "last_attempt_at", "BIGINT DEFAULT 0");
+        addColumnIfMissing(connection, "relay_messages", "delivered_at", "BIGINT DEFAULT 0");
     }
 
     private static void addColumnIfMissing(Connection connection, String table, String column, String type) throws SQLException {
