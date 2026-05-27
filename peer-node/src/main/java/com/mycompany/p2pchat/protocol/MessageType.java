@@ -85,6 +85,8 @@ public enum MessageType {
     RELAY_PULL,
     RELAY_PULL_RESPONSE,
     RELAY_SUPERSEDE,
+    RELAY_STATUS_CHECK,
+    RELAY_STATUS_RESPONSE,
 
     // Legacy
     CREATE_GROUP,
