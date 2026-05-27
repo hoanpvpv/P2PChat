@@ -89,6 +89,8 @@ public class MailboxServer {
         if (result == MailboxRepository.StoreResult.CONFLICT) {
             return error("ERROR_CONFLICT: messageId exists with different payloadHash");
         }
+        String target = (env.receiver != null && !env.receiver.isBlank()) ? env.receiver : env.groupId;
+        System.out.println("[STORE] " + env.sender + " đang lưu tin nhắn (ID: " + env.messageId + ") gửi tới " + target);
         return WireMessage.of(MessageType.STORE_ACK.name(), "mailbox", env.sender,
                 JsonUtil.toJson(new StoreAck(env.messageId, result.name())));
     }
@@ -105,6 +107,9 @@ public class MailboxServer {
             return error("Missing receiver for PULL_MESSAGES");
         }
         List<MailboxEnvelope> messages = repository.pull(receiver, limit);
+        if (!messages.isEmpty()) {
+            System.out.println("[PULL] Đã trả về " + messages.size() + " tin nhắn cho " + receiver);
+        }
         return WireMessage.of(MessageType.PULL_RESPONSE.name(), "mailbox", receiver,
                 JsonUtil.toJson(messages));
     }
